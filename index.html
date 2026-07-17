@@ -1571,7 +1571,7 @@ async function commentPostCloud(postId, body){
   }catch(e){ console.error("Comment error:",e); return false; }
 }
 
-const POST_SELECT="id,user_id,video_url,thumb,caption,score,duration,onsets,created_at,profiles(name,handle,color,bio,club,rating),likes(user_id),comments(id,user_id,body,created_at)";
+const POST_SELECT="id,user_id,video_url,thumb,caption,score,duration,onsets,created_at,profiles!posts_user_id_fkey(name,handle,color,bio,club,rating),likes(user_id),comments(id,user_id,body,created_at)";
 function normalizeCloudPost(row){
   const prof=row.profiles||{};
   const likes=row.likes||[];
