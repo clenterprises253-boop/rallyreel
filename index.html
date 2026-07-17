@@ -1927,6 +1927,112 @@ function ringProgress(p, stage){
 }
 
 /* ============================================================
+   COURT VISION v1 — ball + player tracking from the motion field.
+   Runs on the same frames the engines already decode (no ML deps):
+   · players  = the 2 dominant moving bodies, tracked near/far
+   · ball     = small, fast, compact moving blob away from players
+   · flights  = ball sightings linked through time
+   Point boundaries come from serve-flight → ball-death, and every
+   clip gets analytics: shots, ball-in-play time, player movement,
+   serve side, and which side the ball died on — the raw material
+   for future "who won the point and how" inference.
+   ============================================================ */
+function makeVision(){
+  const VW=192, VH=108;
+  const vcv=document.createElement("canvas"); vcv.width=VW; vcv.height=VH;
+  const vcx=vcv.getContext("2d",{willReadFrequently:true});
+  let vprev=null;
+  const frames=[];   // {t, cut?, players:[{x,y,a}], ball:{x,y}|null}
+  const lbl=new Int32Array(VW*VH), stack=new Int32Array(VW*VH);
+  function feed(src, t){
+    try{ vcx.drawImage(src,0,0,VW,VH); }catch(e){ return; }
+    const d=vcx.getImageData(0,0,VW,VH).data;
+    const luma=new Float32Array(VW*VH);
+    for(let p=0;p<VW*VH;p++) luma[p]=d[p*4]*.299+d[p*4+1]*.587+d[p*4+2]*.114;
+    if(!vprev){ vprev=luma; return; }
+    const hot=new Uint8Array(VW*VH); let hotN=0;
+    for(let p=0;p<VW*VH;p++){ if(Math.abs(luma[p]-vprev[p])>16){ hot[p]=1; hotN++; } }
+    vprev=luma;
+    if(hotN>VW*VH*.5){ frames.push({t, cut:true, players:[], ball:null}); return; }
+    /* connected components over the motion mask */
+    lbl.fill(0); let nextL=0; const comps=[];
+    for(let p=0;p<VW*VH;p++){
+      if(!hot[p]||lbl[p]) continue;
+      nextL++; let sp=0; stack[sp++]=p; lbl[p]=nextL;
+      let n=0,sx=0,sy=0,mnx=VW,mxx=0,mny=VH,mxy=0;
+      while(sp){
+        const q=stack[--sp], qx=q%VW, qy=(q-qx)/VW;
+        n++; sx+=qx; sy+=qy;
+        if(qx<mnx)mnx=qx; if(qx>mxx)mxx=qx; if(qy<mny)mny=qy; if(qy>mxy)mxy=qy;
+        if(qx>0&&hot[q-1]&&!lbl[q-1]){lbl[q-1]=nextL;stack[sp++]=q-1;}
+        if(qx<VW-1&&hot[q+1]&&!lbl[q+1]){lbl[q+1]=nextL;stack[sp++]=q+1;}
+        if(qy>0&&hot[q-VW]&&!lbl[q-VW]){lbl[q-VW]=nextL;stack[sp++]=q-VW;}
+        if(qy<VH-1&&hot[q+VW]&&!lbl[q+VW]){lbl[q+VW]=nextL;stack[sp++]=q+VW;}
+      }
+      comps.push({n, cx:sx/n, cy:sy/n, w:mxx-mnx+1, h:mxy-mny+1});
+    }
+    /* shape classification:
+       player = wide blob (a body: both dimensions substantial)
+       ball   = small or thin smear (fast small object between frames) */
+    const players=comps.filter(c=>c.n>=22 && Math.min(c.w,c.h)>=5).sort((a,b)=>b.n-a.n).slice(0,3)
+      .map(c=>({x:c.cx/VW, y:c.cy/VH, a:c.n}));
+    const ballC=comps.filter(c=>{
+        const minor=Math.min(c.w,c.h);
+        const small=c.n>=2&&c.n<=16;                 // tiny slow-moving ball
+        const smear=minor<=4&&c.n>=3&&c.n<=160;      // fast ball motion streak
+        return small||smear;
+      })
+      .filter(c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.06))
+      .sort((a,b)=>b.n-a.n)[0]||null;
+    frames.push({t, players, ball: ballC?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
+  }
+  return {feed, frames, resetPrev:()=>{vprev=null;}};
+}
+function linkFlights(fs){
+  const flights=[]; let cur=null;
+  const close=c=>{ if(c&&c.pts.length>=3) flights.push(c); };
+  for(const f of fs){
+    if(f.cut){ close(cur); cur=null; continue; }
+    if(f.ball){
+      if(cur && f.t-cur.end<=0.7 && Math.hypot(f.ball.x-cur.lastX, f.ball.y-cur.lastY)<0.25){
+        cur.end=f.t; cur.pts.push({t:f.t, x:f.ball.x, y:f.ball.y}); cur.lastX=f.ball.x; cur.lastY=f.ball.y;
+      }else{
+        close(cur);
+        cur={start:f.t, end:f.t, pts:[{t:f.t, x:f.ball.x, y:f.ball.y}], lastX:f.ball.x, lastY:f.ball.y};
+      }
+    }else if(cur && f.t-cur.end>0.7){ close(cur); cur=null; }
+  }
+  close(cur);
+  return flights;
+}
+function pointInsights(s){
+  const V=analysis.vision; if(!V) return null;
+  const fs=V.frames.filter(f=>f.t>=s.start-0.5 && f.t<=s.end+0.5);
+  if(fs.length<5) return null;
+  const flights=linkFlights(fs);
+  /* two-player presence: fraction of frames seeing ≥2 moving bodies */
+  const present=fs.filter(f=>f.players.length>=2).length/fs.length;
+  /* split player observations into near (lower) / far (upper) court */
+  const near=[], far=[];
+  fs.forEach(f=>f.players.slice(0,2).forEach(p=>{ (p.y>0.5?near:far).push({t:f.t,x:p.x,y:p.y}); }));
+  const dist=tr=>{ let m=0; for(let i=1;i<tr.length;i++){ const d=Math.hypot(tr[i].x-tr[i-1].x, tr[i].y-tr[i-1].y); if(d<.2) m+=d; } return m; };
+  const ballTime=+flights.reduce((a,fl)=>a+(fl.end-fl.start),0).toFixed(1);
+  /* direction changes of ball ≈ shots (fallback: audio strikes) */
+  let turns=0;
+  for(const fl of flights){ let lastDx=0; for(let i=1;i<fl.pts.length;i++){ const dx=fl.pts[i].y-fl.pts[i-1].y; if(lastDx&&Math.sign(dx)!==Math.sign(lastDx)&&Math.abs(dx)>.02) turns++; if(Math.abs(dx)>.005) lastDx=dx; } }
+  const shots = s.onsets!=null ? s.onsets : (turns?turns+1:null);
+  const lastFl=flights[flights.length-1];
+  const endSide=lastFl ? (lastFl.pts[lastFl.pts.length-1].y>0.5?"near":"far") : null;
+  const firstFl=flights[0];
+  let servedBy=null;
+  if(firstFl){ servedBy = firstFl.pts[0].y>0.5?"near":"far"; }
+  return {present:+present.toFixed(2), flights:flights.length, ballTime, shots,
+          moveNear:+(dist(near)*40).toFixed(0), moveFar:+(dist(far)*40).toFixed(0),   // ≈meters, court-scaled
+          endSide, servedBy,
+          firstBall: firstFl?firstFl.start:null, lastBall: lastFl?lastFl.end:null};
+}
+
+/* ============================================================
    SHARED ANALYSIS HELPERS
    ============================================================ */
 function computeOnsets(audioRMS,HOP){
@@ -2129,6 +2235,7 @@ async function analyzeWebCodecs(file, duration){
   const totalRegion=regions.reduce((a,r)=>a+(r.e-r.s),0);
   const dB=clamp(totalRegion/2500,.2,1);
   const fT=[], fM=[], fX=[], cuts=[];
+  const vision=makeVision();
   const thumbs=[]; let lastThumbT=-9;
   const tcv=document.createElement("canvas"); tcv.width=288; tcv.height=162;
   const tcx=tcv.getContext("2d");
@@ -2139,9 +2246,10 @@ async function analyzeWebCodecs(file, duration){
     output:f=>{
       const t=f.timestamp/1e6, ri=regionAt(t);
       if(ri>=0 && t-lastKept>=dB){
-        if(ri!==lastRegion){ prev=null; lastRegion=ri; }
+        if(ri!==lastRegion){ prev=null; vision.resetPrev(); lastRegion=ri; }
         const r=lumaDiff(f,true);
         if(r.cut) cuts.push(t);
+        vision.feed(f, t);
         fT.push(t); fM.push(r.m); fX.push(r.x); lastKept=t;
         /* free thumbnails at decoder speed — no post-pass seeking needed */
         if(t-lastThumbT>=2.5 && thumbs.length<500){
@@ -2200,7 +2308,7 @@ async function analyzeWebCodecs(file, duration){
   merged.sort((a,b)=>a.t-b.t);
   if(merged.length<8) throw new Error("fast engine produced too few samples");
   return {grid:merged.map(o=>o.t), motion:merged.map(o=>o.m), motionX:merged.map(o=>o.x),
-          audioRMS, onsets, audioNote, duration:duration_, vw, vh, thumbs, cuts};
+          audioRMS, onsets, audioNote, duration:duration_, vw, vh, thumbs, cuts, vision};
 }
 
 let analysisCancelled=false;
@@ -2248,6 +2356,7 @@ async function analyze(file){
   /* ---- FAST ENGINE first: WebCodecs + mp4box (MP4/MOV, any length) ---- */
   let audioRMS=null, onsets=null; const HOP=.05;
   let grid=[], motion=[], motionX=[], cuts=[];
+  let vision=null;
   let fast=null;
   if(canFast){
     try{ fast=await analyzeWebCodecs(file, duration); }
@@ -2257,6 +2366,7 @@ async function analyze(file){
   if(!fast && !duration){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
   if(fast){
     grid=fast.grid; motion=fast.motion; motionX=fast.motionX; cuts=fast.cuts||[];
+    vision=fast.vision||null;
     audioRMS=fast.audioRMS; onsets=fast.onsets;
     if(!duration){ duration=fast.duration; $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`; }
     $("ps0-t").textContent=fast.audioNote;
@@ -2312,6 +2422,7 @@ async function analyze(file){
   };
 
   const longFilm = duration > (window.RR_LONG_THRESHOLD || 12*60);
+  vision=makeVision();
 
   if(!longFilm){
     /* uniform fine pass (original path) */
@@ -2321,6 +2432,7 @@ async function analyze(file){
     for(let i=0;i<grid.length;i++){
       if(analysisCancelled){ keepAwake(false); return; }
       const r=await grabAt(grid[i],false);
+      vision.feed(v, grid[i]);
       motion.push(r.m); motionX.push(r.x);
       if(i%4===0||i===grid.length-1){ ringProgress(22+((i+1)/grid.length)*64, 1); etaTxt(i+1,grid.length,t0); }
     }
@@ -2347,8 +2459,9 @@ async function analyze(file){
     const fm=[], fx=[];
     for(let i=0;i<fine.length;i++){
       if(analysisCancelled){ keepAwake(false); return; }
-      if(fine[i].ri!==lastRi){ prev=null; lastRi=fine[i].ri; }   // no cross-region frame diffs
+      if(fine[i].ri!==lastRi){ prev=null; vision.resetPrev(); lastRi=fine[i].ri; }   // no cross-region frame diffs
       const r=await grabAt(fine[i].t,false);
+      vision.feed(v, fine[i].t);
       fm.push(r.m); fx.push(r.x);
       if(i%5===0||i===fine.length-1){ ringProgress(48+((i+1)/fine.length)*38, 1); etaTxt(i+1,fine.length,t1); }
     }
@@ -2388,11 +2501,13 @@ async function analyze(file){
 
   if(analysisCancelled){ keepAwake(false); return; }
   const aw=v.videoWidth||(fast&&fast.vw)||0, ah=v.videoHeight||(fast&&fast.vh)||0;
-  analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,cuts,hasAudio:!!audioRMS,
+  analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,cuts,
+             vision:(vision&&vision.frames.length>10)?vision:null, hasAudio:!!audioRMS,
              vw:aw, vh:ah, srcAR:(aw&&ah)?aw/ah:16/9,
              videoEl:v, thumbCache:(fast&&fast.thumbs&&fast.thumbs.length)?fast.thumbs:null,
              sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
   analysis.segs=computeSegments(SENS.balanced.hi, SENS.balanced.lo);
+  analysis.segs.forEach(s=>{ s.insights=pointInsights(s); });
   ringProgress(94,3);
 
   /* thumbnails 94→100% */
@@ -2460,6 +2575,18 @@ function computeSegments(hiMul, loMul){
     }
     segs=segs.filter(s=>s.end-s.start>=2.5);
   }
+  /* court vision: the point runs serve-flight → ball-death. When the ball
+     was tracked inside a segment, trust it for the boundaries. */
+  if(analysis.vision){
+    for(const s of segs){
+      const vi=pointInsights(s);
+      if(vi && vi.flights>=1 && vi.firstBall!=null){
+        const ns=Math.max(s.start, vi.firstBall-0.8);
+        const ne=Math.min(s.end, vi.lastBall+1.4);
+        if(ne-ns>=2.5){ s.start=ns; s.end=ne; }
+      }
+    }
+  }
   segs.forEach(rescoreSeg);
   segs.sort((a,b)=>b.score-a.score);
   return segs.slice(0,MAX_CLIPS);   // up to 20 clips per upload
@@ -2483,6 +2610,16 @@ function rescoreSeg(s){
   const cutN=(analysis.cuts||[]).filter(t=>t>=s.start&&t<=s.end).length;
   const cutRate=cutN/dur;
   if(cutRate>.2) sc*=clamp(1-(cutRate-.2)*1.6, .3, 1);
+  /* court vision gate: a tennis point has two players on court — segments
+     where the tracker rarely sees two moving bodies aren't points */
+  if(analysis.vision){
+    const vf=analysis.vision.frames.filter(f=>f.t>=s.start&&f.t<=s.end);
+    if(vf.length>=6){
+      const pres=vf.filter(f=>f.players.length>=2).length/vf.length;
+      if(pres<.35) sc*=.5;
+      else if(pres>.7) sc=Math.min(99, sc*1.06);   // clean two-player point
+    }
+  }
   s.score=Math.round(clamp(sc,5,99));
   s.onsets=oc;
   s.cropX=wsum>0 ? clamp(xsum/wsum,0,1) : .5;
@@ -2577,6 +2714,7 @@ function renderCandsAndSummary(){
       <div class="cbody">
         <div class="ctitle" id="ctitle${i}">Point ${i+1} — ${fmtT(s.start)} → ${fmtT(s.end)}</div>
         <div class="csub" id="csub${i}">AI: activity ${s.score}/99${s.onsets!==null?` · ${s.onsets} ball-strike onsets`:""}</div>
+        ${s.insights?`<div class="csub" style="color:var(--accent);">🎾 ${s.insights.shots!=null?`≈${s.insights.shots} shots · `:""}${s.insights.flights?`ball tracked ${s.insights.ballTime}s · `:""}${s.insights.servedBy?`${s.insights.servedBy}-side serve · `:""}${s.insights.endSide?`ended ${s.insights.endSide} side · `:""}players moved ${s.insights.moveNear}m + ${s.insights.moveFar}m</div>`:""}
         <div class="trimrow">
           <span>Start</span>
           <button class="trimbtn" onclick="nudgeSeg(${i},'start',-0.5)" title="Earlier">−</button>
@@ -2657,6 +2795,7 @@ async function publishClips(){
     const c={
       id:"c"+Math.random().toString(36).slice(2,9), kind:"mine", blobKey,
       sess:name, start:s.start, end:s.end, score:s.score, onsets:s.onsets, cropX:s.cropX, vertical:autoCrop,
+      insights:s.insights||null,
       thumb:s.thumb, url, caption:cap, likes:0, comments:[], liked:false, created:now
     };
     clips.push(c);
