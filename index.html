@@ -345,6 +345,26 @@
   .list-empty{text-align:center; color:var(--muted); font-size:13px; padding:40px 30px; line-height:1.6;}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 
+  /* ============ MESSAGES / CHAT ============ */
+  .chat-wrap{display:flex; flex-direction:column; height:100%; min-height:0;}
+  .chat-scroll{flex:1; overflow-y:auto; padding:14px 14px 8px; display:flex; flex-direction:column; gap:8px; scrollbar-width:none;}
+  .chat-scroll::-webkit-scrollbar{display:none;}
+  .bubble{max-width:76%; padding:10px 14px; border-radius:18px; font-size:13.5px; line-height:1.45; word-wrap:break-word;}
+  .bubble.me{align-self:flex-end; background:var(--accent); color:var(--accent-ink); border-bottom-right-radius:6px; font-weight:600;}
+  .bubble.them{align-self:flex-start; background:var(--panel2); border:1px solid var(--line); border-bottom-left-radius:6px;}
+  .bubble small{display:block; font-size:9.5px; opacity:.6; margin-top:3px;}
+  .chat-day{align-self:center; font-size:10.5px; color:var(--muted); padding:6px 0 2px;}
+  .chat-inbar{display:flex; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:var(--bg); flex-shrink:0;}
+  .chat-inbar input{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:99px; color:var(--text); padding:11px 16px; font-size:13.5px; font-family:inherit; outline:none;}
+  .chat-inbar input:focus{border-color:var(--accent);}
+  .chat-send{width:42px; height:42px; border-radius:50%; background:var(--accent); color:var(--accent-ink); border:none; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;}
+  .chat-send:disabled{opacity:.4;}
+  .chat-send svg{width:19px; height:19px;}
+  .conv-last{color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:190px; display:block;}
+  .conv-unread{min-width:18px; height:18px; padding:0 5px; border-radius:99px; background:var(--accent); color:var(--accent-ink); font-size:10.5px; font-weight:800; display:flex; align-items:center; justify-content:center;}
+  .msg-btn{margin-top:10px; background:var(--panel2); color:var(--text); border:1px solid var(--line); font-family:inherit; font-weight:700; font-size:13px; padding:9px 22px; border-radius:99px; cursor:pointer;}
+  .msg-btn:active{border-color:var(--accent); color:var(--accent);}
+
   /* profile editor / onboarding overlay */
   .editor{position:absolute; inset:0; z-index:130; background:rgba(6,9,13,.72); backdrop-filter:blur(6px); display:none; align-items:center; justify-content:center; padding:20px;}
   .editor.show{display:flex;}
@@ -440,10 +460,16 @@
     <!-- ================= FEED ================= -->
     <div class="view active" id="view-feed">
       <div class="feed-head">
-        <button class="fh-ic" id="bell-btn" onclick="openNotifications()" title="Notifications">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-          <span class="fh-badge" id="notif-badge" style="display:none"></span>
-        </button>
+        <div style="display:flex; gap:14px; pointer-events:auto;">
+          <button class="fh-ic" id="bell-btn" onclick="openNotifications()" title="Notifications">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            <span class="fh-badge" id="notif-badge" style="display:none"></span>
+          </button>
+          <button class="fh-ic" id="dm-btn" onclick="openMessages()" title="Messages">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+            <span class="fh-badge" id="msg-badge" style="display:none"></span>
+          </button>
+        </div>
         <div class="fh-tabs">
           <span class="on" data-feedtab="foryou">For You</span>
           <span data-feedtab="following">Following</span>
@@ -924,6 +950,48 @@ function netCardHTML(p){
       </div>
     </div></div>`;
 }
+function cloudCardHTML(p){
+  const a=p.author, isMine=authUser&&a.id===authUser.id, isF=store.following.has(a.id);
+  return `<div class="reel-slide"><div class="clip-card" id="ccard-${p.id}" ondblclick="handleDoubleTap(event,'cloud','${p.id}')">
+      <div class="clip-video" onclick="togglePlayCloud('${p.id}')">
+        <video playsinline preload="metadata" poster="${p.thumb||""}" src="${p.videoUrl}"></video>
+      </div>
+      <div class="bigplay" onclick="togglePlayCloud('${p.id}')"><span>▶</span></div>
+      <div class="rally-chip"><span class="dot"></span>${p.onsets?p.onsets+" strikes · ":""}${p.duration?p.duration.toFixed(1)+"s":"clip"}</div>
+      <div class="clip-grad"></div>
+      ${actionsHTML("cloud",p)}
+      <div class="clip-meta">
+        <div class="ai-badge">✦ AI auto-highlight · live on RallyReel</div>
+        <div class="clip-user">
+          <div class="who" onclick="openProfile('${a.id}')" style="display:flex;align-items:center;gap:9px;">
+            <div class="avatar" style="background:${a.color}">${a.name[0]}</div>
+            <div><b>${a.name}</b><small>${a.handle} · ${p.time}${p.score?" · 🔥 "+p.score:""}</small></div>
+          </div>
+          ${isMine?"":`<button class="follow-btn${isF?" following":""}" id="fb-${a.id}" onclick="toggleFollowCloud('${a.id}')">${isF?"Following":"Follow"}</button>`}
+        </div>
+        <div class="clip-caption">${linkifyTags(p.cap)}</div>
+      </div>
+    </div></div>`;
+}
+function togglePlayCloud(id){
+  const p=cloudPosts.find(x=>x.id===id); if(!p) return;
+  const card=$("ccard-"+id); if(!card) return;
+  const vid=card.querySelector("video");
+  document.querySelectorAll(".clip-card video").forEach(v=>{ if(v!==vid){ v.pause(); v.closest(".clip-card").classList.remove("playing"); } });
+  // parse #t=start,end media fragment for clip bounds
+  let s=0,e=Infinity;
+  const frag=(p.videoUrl.split("#t=")[1]||"").split(",");
+  if(frag[0]) s=parseFloat(frag[0])||0;
+  if(frag[1]) e=parseFloat(frag[1])||Infinity;
+  if(vid.paused){
+    if(vid.currentTime<s-.3 || vid.currentTime>=e-.05) vid.currentTime=s;
+    vid.muted=false;
+    vid.play().catch(()=>toast("Video still uploading — try again in a moment"));
+    card.classList.add("playing");
+    vid.ontimeupdate=()=>{ if(vid.currentTime>=e){ vid.pause(); vid.currentTime=s; card.classList.remove("playing"); } };
+    vid.onpause=()=>card.classList.remove("playing");
+  }else{ vid.pause(); }
+}
 function linkifyTags(text){
   return (text||"").replace(/#([\p{L}\p{N}_]+)/gu, (m,tag)=>`<span class="htag" onclick="event.stopPropagation();openSearch('#${tag}')">#${tag}</span>`);
 }
@@ -942,12 +1010,15 @@ function buildFeed(){
         <p>Scroll tennis clips from players everywhere. Tap Follow to build your Following feed — and hit + to add your own AI-cut highlights.</p>
         <button class="btn sm" style="width:auto; padding:11px 18px;" onclick="switchTab(document.querySelector('.tab-fab'))">Make my first highlights</button>
       </div></div>` : "";
-    // mix: my clips interleaved near top, then shuffled network
-    const items = [...store.clips.map(c=>mineCardHTML(c)), ...store.fypOrder.map(p=>netCardHTML(p))];
+    // mix: real cloud posts first (other people's), then my local clips, then demo network
+    const others=cloudPosts.filter(p=>!authUser||p.userId!==authUser.id);
+    const items = [...others.map(p=>cloudCardHTML(p)), ...store.clips.map(c=>mineCardHTML(c)), ...store.fypOrder.map(p=>netCardHTML(p))];
     html = welcome + items.join("");
   } else if(feedTab==="following"){
+    const cloudFollowed = cloudPosts.filter(p=>store.following.has(p.userId));
     const followed = store.fypOrder.filter(p=>store.following.has(p.author.id));
-    html = followed.length ? followed.map(p=>netCardHTML(p)).join("")
+    const both=[...cloudFollowed.map(p=>cloudCardHTML(p)), ...followed.map(p=>netCardHTML(p))];
+    html = both.length ? both.join("")
       : slideBanner("👀","No follows yet","Head to For You, tap Follow on players you like, and their clips land here.");
   } else { // club
     html = store.clips.length ? store.clips.map(c=>mineCardHTML(c)).join("") + slideBanner("🏆","Westside TC — Weekly Top 10","Auto-reel drops Sunday · your clips are in the running.")
@@ -968,23 +1039,47 @@ function toggleFollow(aid){
   saveState();
   toast(now?`Following ${a.name} — check your Following feed 🎾`:`Unfollowed ${a.name}`);
 }
-function openProfile(aid){
-  const a=store.network.find(x=>x.id===aid); if(!a) return;
+async function openProfile(aid){
+  let a=store.network.find(x=>x.id===aid), isCloud=false;
+  if(!a){
+    const cloud=await cachedProfile(aid);
+    if(!cloud){ toast("Profile not found"); return; }
+    isCloud=true;
+    a={id:cloud.id, name:cloud.name, handle:cloud.handle, bio:cloud.bio||`${cloud.rating} · ${cloud.club}`, color:cloud.color, rating:cloud.rating, club:cloud.club, followers:0, following:0, posts:[]};
+  }
   const isF=store.following.has(aid);
+  const isMe=authUser&&aid===authUser.id;
+  let cloudTheirPosts=[];
+  if(isCloud){
+    cloudTheirPosts=cloudPosts.filter(p=>p.userId===aid);
+    try{
+      const [{count:fw},{count:fg}]=await Promise.all([
+        sb.from("follows").select("*",{count:"exact",head:true}).eq("following_id",aid),
+        sb.from("follows").select("*",{count:"exact",head:true}).eq("follower_id",aid)
+      ]);
+      a.followers=fw||0; a.following=fg||0;
+    }catch(e){}
+  }
+  const likeTotal = isCloud ? cloudTheirPosts.reduce((s,p)=>s+p.likes,0) : a.posts.reduce((s,p)=>s+p.likes,0);
   $("panel-title").textContent=a.name;
   $("panel-body").innerHTML=`
     <div class="pv-hero">
       <div class="avatar" style="background:${a.color}">${a.name[0]}</div>
-      <b>${a.name}</b><div class="handle">${a.handle}</div>
+      <b>${a.name}</b><div class="handle">${a.handle}${isCloud?' · <span style="color:var(--accent)">real player</span>':""}</div>
       <div class="pv-stats">
         <div><b id="pf-followers-${a.id}">${a.followers.toLocaleString()}</b><span>followers</span></div>
         <div><b>${(a.following||0).toLocaleString()}</b><span>following</span></div>
-        <div><b>${a.posts.reduce((s,p)=>s+p.likes,0).toLocaleString()}</b><span>likes</span></div>
+        <div><b>${likeTotal.toLocaleString()}</b><span>likes</span></div>
       </div>
-      <button class="follow-btn${isF?" following":""}" id="pf-follow-${a.id}" onclick="toggleFollow('${a.id}')">${isF?"Following":"Follow"}</button>
+      ${isMe?"":`<button class="follow-btn${isF?" following":""}" id="pf-follow-${a.id}" onclick="${isCloud?"toggleFollowCloud":"toggleFollow"}('${a.id}')">${isF?"Following":"Follow"}</button>
+      ${isCloud?`<br><button class="msg-btn" onclick="openChat('${a.id}')">💬 &nbsp;Message</button>`:""}`}
       <div class="bio">${a.bio}</div>
     </div>
-    <div class="pf-grid" style="padding:0 12px;">${a.posts.map(p=>`<div class="pf-cell" onclick="closePanel()">${courtHTML(p.court)}<span class="views">▶ ${p.shots}-shot · ♥ ${p.likes}</span></div>`).join("")}</div>`;
+    ${isCloud
+      ? (cloudTheirPosts.length
+          ? `<div class="pf-grid" style="padding:0 12px;">${cloudTheirPosts.map(p=>`<div class="pf-cell" onclick="closePanel()"><img src="${p.thumb||""}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"><span class="views">▶ ${p.duration?p.duration.toFixed(0)+"s":"clip"} · ♥ ${p.likes}</span></div>`).join("")}</div>`
+          : `<div class="list-empty">No clips posted yet.</div>`)
+      : `<div class="pf-grid" style="padding:0 12px;">${a.posts.map(p=>`<div class="pf-cell" onclick="closePanel()">${courtHTML(p.court)}<span class="views">▶ ${p.shots}-shot · ♥ ${p.likes}</span></div>`).join("")}</div>`}`;
   openPanel();
 }
 
@@ -1016,7 +1111,7 @@ function openFollowers(){
 
 /* ---------- panel open/close + swipe-to-dismiss ---------- */
 function openPanel(){ const p=$("panel"); p.style.transform=""; p.classList.remove("dragging"); p.classList.add("show"); }
-function closePanel(){ const p=$("panel"); p.classList.remove("dragging"); p.style.transform=""; p.classList.remove("show"); }
+function closePanel(){ const p=$("panel"); p.classList.remove("dragging"); p.style.transform=""; p.classList.remove("show"); activeChatUser=null; const pb=$("panel-body"); if(pb) pb.style.paddingBottom=""; }
 (function initPanelSwipe(){
   const p=$("panel"); let sx=0, sy=0, dx=0, active=false, decided=false, horiz=false;
   function move(e){
@@ -1159,15 +1254,359 @@ function applySession(user){
     onboarded:true, email:user.email
   });
   renderMe(); renderAccountUI();
-  if($("view-feed").classList.contains("active")) buildFeed();
   if($("view-profile").classList.contains("active")) renderProfile();
   saveState();
+  // cloud bootstrap: profile up, follows down, realtime inbox on, feed refresh
+  syncProfileToCloud();
+  loadMyFollowsFromCloud().then(()=>refreshCloudFeed());
+  initMessagesRealtime();
+  refreshMsgUnread();
 }
 async function signOut(){
   if(sb) { try{ await sb.auth.signOut(); }catch(e){} }
+  teardownMessagesRealtime();
   authUser=null; store.me.email=null;
-  renderAccountUI();
+  cloudPosts=[];
+  renderAccountUI(); buildFeed();
   toast("Signed out — you're browsing as a guest");
+}
+
+/* ============================================================
+   CLOUD SYNC & DISCOVERY
+   ============================================================ */
+async function syncProfileToCloud(){
+  if(!sb||!authUser) return;
+  try{
+    const {error}=await sb
+      .from("profiles")
+      .upsert({
+        id:authUser.id,
+        name:store.me.name,
+        handle:store.me.handle,
+        rating:store.me.rating,
+        club:store.me.club,
+        bio:store.me.bio,
+        color:store.me.color
+      },{onConflict:"id"});
+    if(error) console.error("Profile sync error:",error);
+  }catch(e){ console.error("Profile sync failed:",e); }
+}
+
+async function queryProfile(profileId){
+  if(!sb) return null;
+  try{
+    const {data,error}=await sb.from("profiles").select("*").eq("id",profileId).single();
+    if(error) return null;
+    return data;
+  }catch(e){ return null; }
+}
+
+async function queryProfiles(search){
+  if(!sb) return [];
+  try{
+    const q=search.toLowerCase().trim();
+    const {data,error}=await sb
+      .from("profiles")
+      .select("*")
+      .or(`name.ilike.%${q}%,handle.ilike.%${q}%`)
+      .limit(20);
+    if(error) return [];
+    return data||[];
+  }catch(e){ return []; }
+}
+
+async function toggleFollowCloud(profileId){
+  if(!authUser){ openAuth("signin"); toast("Sign in to follow players"); return; }
+  if(!sb) return;
+  try{
+    const isFollowing=store.following.has(profileId);
+    if(isFollowing){
+      const {error}=await sb.from("follows").delete().eq("follower_id",authUser.id).eq("following_id",profileId);
+      if(error) throw error;
+      store.following.delete(profileId);
+    }else{
+      const {error}=await sb.from("follows").insert({follower_id:authUser.id,following_id:profileId});
+      if(error) throw error;
+      store.following.add(profileId);
+    }
+    const now=store.following.has(profileId);
+    document.querySelectorAll(`[id="fb-${profileId}"],[id="pf-follow-${profileId}"]`).forEach(b=>{ b.classList.toggle("following",now); b.textContent=now?"Following":"Follow"; });
+    saveState();
+    toast(now?"Following 🎾":"Unfollowed");
+  }catch(e){ console.error("Follow toggle error:",e); }
+}
+
+async function loadMyFollowsFromCloud(){
+  if(!sb||!authUser) return;
+  try{
+    const {data,error}=await sb.from("follows").select("following_id").eq("follower_id",authUser.id);
+    if(error) return;
+    (data||[]).forEach(f=>store.following.add(f.following_id));
+    saveState();
+  }catch(e){}
+}
+
+async function loadMyFollowerCount(){
+  if(!sb||!authUser) return 0;
+  try{
+    const {count}=await sb.from("follows").select("follower_id",{count:"exact",head:true}).eq("following_id",authUser.id);
+    return count||0;
+  }catch(e){ return 0; }
+}
+
+async function loadCloudMessages(otherUserId){
+  if(!sb||!authUser) return [];
+  try{
+    const {data,error}=await sb
+      .from("messages")
+      .select("*")
+      .or(`and(sender_id.eq.${authUser.id},recipient_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},recipient_id.eq.${authUser.id})`)
+      .order("created_at",{ascending:true});
+    if(error) return [];
+    return data||[];
+  }catch(e){ return []; }
+}
+
+async function sendMessageToCloud(recipientId,body){
+  if(!sb||!authUser) return false;
+  try{
+    const {error}=await sb.from("messages").insert({sender_id:authUser.id,recipient_id:recipientId,body});
+    if(error) throw error;
+    return true;
+  }catch(e){ console.error("Send message error:",e); return false; }
+}
+
+/* one global realtime subscription: everything sent TO me */
+let msgChannel=null, activeChatUser=null, msgUnread=0;
+const profileCache={};  // uuid -> profile row
+async function cachedProfile(id){
+  if(profileCache[id]) return profileCache[id];
+  const p=await queryProfile(id);
+  if(p) profileCache[id]=p;
+  return p;
+}
+function initMessagesRealtime(){
+  if(!sb||!authUser||msgChannel) return;
+  msgChannel=sb.channel("inbox-"+authUser.id)
+    .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:`recipient_id=eq.${authUser.id}`}, async (payload)=>{
+      const m=payload.new;
+      if(activeChatUser && m.sender_id===activeChatUser){
+        appendBubble(m);
+        sb.from("messages").update({read:true}).eq("id",m.id).then(()=>{});
+      }else{
+        msgUnread++; renderMsgBadge();
+        const p=await cachedProfile(m.sender_id);
+        toast(`💬 ${p?p.name:"New message"}: ${m.body.slice(0,40)}`);
+      }
+    })
+    .subscribe();
+}
+function teardownMessagesRealtime(){
+  if(msgChannel){ try{ sb.removeChannel(msgChannel); }catch(e){} msgChannel=null; }
+  activeChatUser=null; msgUnread=0; renderMsgBadge();
+}
+function renderMsgBadge(){
+  const b=$("msg-badge"); if(!b) return;
+  if(msgUnread>0){ b.textContent=msgUnread>9?"9+":msgUnread; b.style.display="flex"; } else b.style.display="none";
+}
+async function refreshMsgUnread(){
+  if(!sb||!authUser) return;
+  try{
+    const {count}=await sb.from("messages").select("id",{count:"exact",head:true}).eq("recipient_id",authUser.id).eq("read",false);
+    msgUnread=count||0; renderMsgBadge();
+  }catch(e){}
+}
+
+/* ---------- messages UI ---------- */
+async function openMessages(){
+  if(!authUser){ openAuth("signin"); toast("Sign in to send messages"); return; }
+  $("panel-title").textContent="Messages";
+  $("panel-body").style.paddingBottom="";
+  $("panel-body").innerHTML=`<div class="list-empty">Loading conversations…</div>`;
+  openPanel();
+  try{
+    const {data:msgs}=await sb.from("messages")
+      .select("*").or(`sender_id.eq.${authUser.id},recipient_id.eq.${authUser.id}`)
+      .order("created_at",{ascending:false}).limit(200);
+    const convos=new Map(); // partnerId -> {last, unread}
+    (msgs||[]).forEach(m=>{
+      const other=m.sender_id===authUser.id?m.recipient_id:m.sender_id;
+      if(!convos.has(other)) convos.set(other,{last:m,unread:0});
+      if(m.recipient_id===authUser.id && !m.read) convos.get(other).unread++;
+    });
+    // also offer people I follow (cloud uuids) with no thread yet
+    for(const fid of store.following){ if(fid.length>20 && !convos.has(fid)) convos.set(fid,{last:null,unread:0}); }
+    if(!convos.size){
+      $("panel-body").innerHTML=`<div class="list-empty">No conversations yet.<br>Search for a player and tap <b style="color:var(--accent)">💬 Message</b> on their profile.</div>
+        <button class="btn ghost sm" style="width:auto; margin:0 auto; display:block;" onclick="closePanel();openSearch()">🔍 Find players</button>`;
+      return;
+    }
+    const rows=await Promise.all([...convos.entries()].map(async([uid,c])=>{
+      const p=await cachedProfile(uid); if(!p) return "";
+      const mine=c.last && c.last.sender_id===authUser.id;
+      return `<div class="lrow" style="cursor:pointer;" onclick="openChat('${uid}')">
+        <div class="avatar" style="background:${p.color}">${p.name[0]}</div>
+        <div style="flex:1; min-width:0;"><b style="font-size:14px; display:block;">${p.name}</b>
+          <span class="conv-last">${c.last?(mine?"You: ":"")+esc(c.last.body):"Start the conversation 🎾"}</span></div>
+        ${c.unread?`<span class="conv-unread">${c.unread}</span>`:""}
+      </div>`;
+    }));
+    $("panel-body").innerHTML=rows.join("")||`<div class="list-empty">No conversations yet.</div>`;
+  }catch(e){ $("panel-body").innerHTML=`<div class="list-empty">Couldn't load messages — check your connection.</div>`; }
+}
+function esc(s){ return (s||"").replace(/</g,"&lt;"); }
+function bubbleHTML(m){
+  const mine=m.sender_id===authUser.id;
+  const t=new Date(m.created_at);
+  return `<div class="bubble ${mine?"me":"them"}">${esc(m.body)}<small>${t.getHours()%12||12}:${String(t.getMinutes()).padStart(2,"0")} ${t.getHours()>=12?"pm":"am"}</small></div>`;
+}
+function appendBubble(m){
+  const sc=$("chat-scroll"); if(!sc) return;
+  sc.insertAdjacentHTML("beforeend", bubbleHTML(m));
+  sc.scrollTop=sc.scrollHeight;
+}
+async function openChat(uid){
+  if(!authUser){ openAuth("signin"); return; }
+  const p=await cachedProfile(uid);
+  if(!p){ toast("Couldn't load that player"); return; }
+  activeChatUser=uid;
+  $("panel-title").textContent=p.name;
+  $("panel-body").style.paddingBottom="0";
+  $("panel-body").innerHTML=`
+    <div class="chat-wrap">
+      <div class="chat-scroll" id="chat-scroll"><div class="list-empty">Loading…</div></div>
+      <div class="chat-inbar">
+        <input id="chat-in" placeholder="Message ${esc(p.name)}…" maxlength="500" onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="chat-send" onclick="sendChat()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg></button>
+      </div>
+    </div>`;
+  openPanel();
+  const msgs=await loadCloudMessages(uid);
+  const sc=$("chat-scroll");
+  sc.innerHTML = msgs.length ? msgs.map(bubbleHTML).join("") : `<div class="list-empty">Say hi to ${esc(p.name)} 👋<br>Messages are private between you two.</div>`;
+  sc.scrollTop=sc.scrollHeight;
+  // mark incoming as read
+  try{
+    await sb.from("messages").update({read:true}).eq("sender_id",uid).eq("recipient_id",authUser.id).eq("read",false);
+    refreshMsgUnread();
+  }catch(e){}
+  setTimeout(()=>{ const i=$("chat-in"); if(i&&window.innerWidth>820) i.focus(); },250);
+}
+async function sendChat(){
+  const f=$("chat-in"); if(!f) return;
+  const txt=f.value.trim(); if(!txt||!activeChatUser) return;
+  f.value="";
+  const optimistic={sender_id:authUser.id, recipient_id:activeChatUser, body:txt, created_at:new Date().toISOString()};
+  const empty=$("chat-scroll").querySelector(".list-empty"); if(empty) empty.remove();
+  appendBubble(optimistic);
+  const ok=await sendMessageToCloud(activeChatUser, txt);
+  if(!ok) toast("Message didn't send — check your connection");
+}
+
+/* ============================================================
+   CLOUD POSTS & CLIPS
+   ============================================================ */
+const uploadedBlobs=new Set();  // blobKeys already in cloud storage this session
+async function uploadClipToStorage(clip){
+  if(!sb||!authUser) return null;
+  try{
+    const path=`${authUser.id}/${clip.blobKey}.webm`;
+    if(uploadedBlobs.has(clip.blobKey)) return path;   // same source video already up
+    const blob=await idbGet(clip.blobKey);
+    if(!blob) return null;
+    if(blob.size>45*1048576){ toast("Video too large for cloud sharing (45MB max) — clip stays on this device"); return null; }
+    const {error}=await sb.storage.from("clips").upload(path,blob,{upsert:true,contentType:blob.type||"video/webm"});
+    if(error) throw error;
+    uploadedBlobs.add(clip.blobKey);
+    return path;
+  }catch(e){ console.error("Upload error:",e); return null; }
+}
+
+async function createPostInCloud(clip, storagePath){
+  if(!sb||!authUser) return null;
+  try{
+    // media fragment carries the clip's in/out points — no schema change needed
+    const cdnUrl=`${SUPABASE_URL}/storage/v1/object/public/clips/${storagePath}#t=${clip.start.toFixed(2)},${clip.end.toFixed(2)}`;
+    const {data,error}=await sb.from("posts").insert({
+      user_id:authUser.id,
+      video_url:cdnUrl,
+      thumb:clip.thumb,
+      caption:clip.caption||"",
+      score:clip.score||0,
+      duration:+(clip.end-clip.start).toFixed(2),
+      onsets:clip.onsets||0
+    }).select().single();
+    if(error) throw error;
+    return data;
+  }catch(e){ console.error("Create post error:",e); return null; }
+}
+
+async function syncClipToCloud(clip){
+  if(!sb||!authUser) return null;
+  const path=await uploadClipToStorage(clip);
+  if(!path) return null;
+  return await createPostInCloud(clip,path);
+}
+
+async function likePostCloud(postId, isLike){
+  if(!sb||!authUser) return false;
+  try{
+    if(isLike){
+      const {error}=await sb.from("likes").insert({user_id:authUser.id,post_id:postId});
+      if(error) throw error;
+    }else{
+      const {error}=await sb.from("likes").delete().eq("user_id",authUser.id).eq("post_id",postId);
+      if(error) throw error;
+    }
+    return true;
+  }catch(e){ console.error("Like toggle error:",e); return false; }
+}
+
+async function commentPostCloud(postId, body){
+  if(!sb||!authUser) return false;
+  try{
+    const {error}=await sb.from("comments").insert({post_id:postId,user_id:authUser.id,body});
+    if(error) throw error;
+    return true;
+  }catch(e){ console.error("Comment error:",e); return false; }
+}
+
+const POST_SELECT="id,user_id,video_url,thumb,caption,score,duration,onsets,created_at,profiles(name,handle,color,bio,club,rating),likes(user_id),comments(id,user_id,body,created_at)";
+function normalizeCloudPost(row){
+  const prof=row.profiles||{};
+  const likes=row.likes||[];
+  return {
+    id:row.id, kind:"cloud", cloudId:row.id, userId:row.user_id,
+    videoUrl:row.video_url, thumb:row.thumb, cap:row.caption||"",
+    score:row.score||0, duration:row.duration||0, onsets:row.onsets,
+    time:agoText(row.created_at),
+    likes:likes.length,
+    liked:!!(authUser && likes.some(l=>l.user_id===authUser.id)),
+    comments:(row.comments||[]).sort((a,b)=>a.created_at<b.created_at?-1:1).map(c=>({n:c.user_id===((authUser||{}).id)?(store.me.name||"You"):"", uid:c.user_id, c:0, t:agoText(c.created_at), p:esc(c.body)})),
+    author:{id:row.user_id, name:prof.name||"Player", handle:prof.handle||"@player", color:prof.color||"#4f9cf9", bio:prof.bio||"", club:prof.club||"", rating:prof.rating||""}
+  };
+}
+function agoText(iso){
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(s<60) return "now"; if(s<3600) return Math.floor(s/60)+"m";
+  if(s<86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d";
+}
+let cloudPosts=[];
+async function loadCloudPosts(){
+  if(!sb) return [];
+  try{
+    const {data,error}=await sb.from("posts").select(POST_SELECT).order("created_at",{ascending:false}).limit(50);
+    if(error){ console.error("Feed load error:",error); return []; }
+    return (data||[]).map(normalizeCloudPost);
+  }catch(e){ return []; }
+}
+async function refreshCloudFeed(){
+  cloudPosts=await loadCloudPosts();
+  // resolve commenter names in the background
+  const uids=new Set(); cloudPosts.forEach(p=>p.comments.forEach(c=>{ if(!c.n) uids.add(c.uid); }));
+  for(const uid of uids){ const prof=await cachedProfile(uid); if(prof){ cloudPosts.forEach(p=>p.comments.forEach(c=>{ if(c.uid===uid&&!c.n) c.n=prof.name; })); } }
+  cloudPosts.forEach(p=>p.comments.forEach(c=>{ if(!c.n) c.n="Player"; }));
+  if($("view-feed").classList.contains("active")) buildFeed();
 }
 
 /* ============================================================
@@ -1190,7 +1629,7 @@ function allTags(){
   ["#tennis","#clay","#serve","#backhand","#winner"].forEach(x=>t.add(x));
   return [...t];
 }
-function runSearch(q){
+async function runSearch(q){
   q=(q||"").trim().toLowerCase();
   const box=$("search-results");
   if(!q){
@@ -1206,10 +1645,18 @@ function runSearch(q){
     return;
   }
   const tagQ=q.replace(/^#/,"");
-  const people=store.network.filter(a=>a.name.toLowerCase().includes(q)||a.handle.toLowerCase().includes(q));
+  const people=q.startsWith("#")?[]:await queryProfiles(q);
   const clips=store.network.flatMap(a=>a.posts).filter(p=>p.cap.toLowerCase().includes(q) || p.cap.toLowerCase().includes("#"+tagQ));
   let html="";
-  if(people.length){ html+=`<div class="sec-h">Players</div>`+people.map(accountRow).join(""); }
+  if(people.length){ html+=`<div class="sec-h">Players</div>`+people.map(p=>{
+    const isMe=authUser&&p.id===authUser.id;
+    return `<div class="lrow">
+    <div class="who" onclick="openProfile('${p.id}')">
+      <div class="avatar" style="background:${p.color}">${p.name[0]}</div>
+      <div><b>${p.name}</b><small>${p.handle}${p.club?" · "+p.club:""}</small></div>
+    </div>
+    ${isMe?`<small class="sub">you</small>`:`<button class="follow-btn${store.following.has(p.id)?" following":""}" id="fb-${p.id}" onclick="toggleFollowCloud('${p.id}')">${store.following.has(p.id)?"Following":"Follow"}</button>`}
+  </div>`;}).join(""); }
   if(clips.length){ html+=`<div class="sec-h">Clips</div><div class="ex-grid">`+clips.map(p=>`<div class="ex-cell" onclick="openProfile('${p.author.id}')">${courtHTML(p.court)}<span class="views">▶ ${p.shots}-shot</span></div>`).join("")+`</div>`; }
   box.innerHTML=html||`<div class="list-empty">No results for "${q}".<br>Try a player name or a #hashtag.</div>`;
 }
@@ -1265,11 +1712,12 @@ function simulateActivity(){
 /* double-tap-to-like with heart burst (Instagram/TikTok style: always likes, never unlikes) */
 function handleDoubleTap(e, kind, id){
   const o=findPost(kind,id);
-  if(!o.liked){
+  if(!o.liked && !(kind==="cloud" && !authUser)){
     o.liked=true; o.likes++;
     const span=$("lk-"+id); if(span) span.textContent=o.likes;
     const btn = e.currentTarget.querySelector(".act.like"); if(btn) btn.classList.add("liked");
     saveState();
+    if(kind==="cloud" && authUser && sb) likePostCloud(o.cloudId, true);
   }
   const card=e.currentTarget;
   const h=document.createElement("div");
@@ -1283,6 +1731,7 @@ function handleDoubleTap(e, kind, id){
 
 function findPost(kind,id){
   if(kind==="mine") return store.clips.find(c=>c.id===id);
+  if(kind==="cloud") return cloudPosts.find(p=>p.id===id);
   for(const a of store.network){ const p=a.posts.find(x=>x.id===id); if(p) return p; }
   return null;
 }
@@ -1302,13 +1751,17 @@ function togglePlay(id){
   }else{ vid.pause(); }
 }
 
-function likePost(kind,id,btn){
+async function likePost(kind,id,btn){
+  if(kind==="cloud" && !authUser){ openAuth("signin"); toast("Sign in to like posts"); return; }
   const o=findPost(kind,id);
   const liked=btn.classList.toggle("liked");
   o.liked=liked;
   o.likes+=liked?1:-1;
   const s=$("lk-"+id); if(s) s.textContent=o.likes;
   saveState();
+  if(kind==="cloud" && authUser && sb){
+    likePostCloud(o.cloudId, liked);
+  }
 }
 
 /* ---------- comments sheet ---------- */
@@ -1326,21 +1779,26 @@ function openComments(kind,id){
   openSheet("sheet-comments");
   setTimeout(()=>list.scrollTop=list.scrollHeight,100);
 }
-function sendComment(){
+async function sendComment(){
   const f=$("cmt-field"), txt=f.value.trim(); if(!txt) return;
+  if(activeSheet.type==="cloud" && !authUser){ openAuth("signin"); toast("Sign in to comment"); return; }
   const o=findPost(activeSheet.type,activeSheet.id);
-  o.comments.push({n:"Tanner",c:0,t:"now",p:txt.replace(/</g,"&lt;")});
+  o.comments.push({n:store.me.name||"Tanner",c:0,t:"now",p:txt.replace(/</g,"&lt;")});
   f.value="";
   const el=$("cn-"+activeSheet.id); if(el) el.textContent=o.comments.length;
   openComments(activeSheet.type,activeSheet.id);
   saveState();
+  if(activeSheet.type==="cloud" && authUser && sb){
+    commentPostCloud(o.cloudId, txt);
+  }
   toast("Comment posted 💬");
 }
 
 /* ---------- share sheet ---------- */
 function openShare(kind,id){
   activeSheet={type:kind,id};
-  $("share-sub").textContent = kind==="mine" ? (autoCrop ? "Real 9:16 vertical export — auto-centered on the action." : "Real clip export — recorded from your footage.") : "Demo post — sharing simulated.";
+  $("share-sub").textContent = kind==="mine" ? (autoCrop ? "Real 9:16 vertical export — auto-centered on the action." : "Real clip export — recorded from your footage.")
+    : kind==="cloud" ? "Real post — copy a public link anyone can watch." : "Demo post — sharing simulated.";
   $("btn-remove").style.display = kind==="mine" ? "flex" : "none";
   openSheet("sheet-share");
 }
@@ -1353,6 +1811,16 @@ function removeActiveClip(){
 }
 async function shareTo(dest){
   const {type,id}=activeSheet;
+  if(type==="cloud"){
+    const p=findPost("cloud",id);
+    closeSheets();
+    if(p){
+      const link=p.videoUrl;
+      if(dest==="native" && navigator.share){ try{ await navigator.share({title:"RallyReel highlight",url:link.split("#")[0]}); }catch(e){} }
+      else{ try{ await navigator.clipboard.writeText(link); setTimeout(()=>toast("Public video link copied 🔗"),200); }catch(e){ setTimeout(()=>toast("Link: "+link.slice(0,60)+"…"),200); } }
+    }
+    return;
+  }
   if(type!=="mine"){
     closeSheets(); setTimeout(()=>toast("Demo post — connect real footage to share for real 🎾"),250); return;
   }
@@ -1726,21 +2194,35 @@ function drawTimeline(ph){
 }
 
 /* ---------- publish / download ---------- */
-function publishClips(){
+async function publishClips(){
   const {segs,url,name,duration,file}=analysis;
   const kept=segs.filter((_,i)=>keeps[i]);
   const cap=($("cap").value.trim()||"Fresh highlights 🎾").replace(/</g,"&lt;");
   const now=new Date();
   const blobKey="b"+Math.random().toString(36).slice(2,10);
   store.sessions.unshift({name,date:now,duration,points:segs.length,kept:kept.length});
+  const clips=[];
   for(const s of [...kept].reverse()){
-    store.clips.unshift({
+    const c={
       id:"c"+Math.random().toString(36).slice(2,9), kind:"mine", blobKey,
       sess:name, start:s.start, end:s.end, score:s.score, onsets:s.onsets, cropX:s.cropX, vertical:autoCrop,
       thumb:s.thumb, url, caption:cap, likes:0, comments:[], liked:false, created:now
-    });
+    };
+    clips.push(c);
+    store.clips.unshift(c);
   }
-  if(file) idbPut(blobKey, file).then(saveState).catch(()=>{}); else saveState();
+  const blobReady = file ? idbPut(blobKey, file).then(saveState).catch(()=>{}) : Promise.resolve(saveState());
+  if(authUser && sb){
+    (async()=>{
+      await blobReady;
+      let synced=0;
+      for(const c of clips){
+        const post=await syncClipToCloud(c);
+        if(post){ c.cloudId=post.id; synced++; }
+      }
+      if(synced){ toast(`☁️ ${synced} clip${synced!==1?"s":""} live for everyone on RallyReel`); refreshCloudFeed(); }
+    })();
+  }
   buildFeed();
   switchTab(document.querySelector('.tab[data-view="view-feed"]'));
   $("feed-scroll").scrollTop=0;
@@ -1986,8 +2468,9 @@ Object.assign(window,{switchTab,showStep,togglePlay,likePost,openComments,sendCo
     try{
       const {data}=await sb.auth.getSession();
       if(data && data.session){ applySession(data.session.user); hasSession=true; }
-      sb.auth.onAuthStateChange((_e,session)=>{ if(session&&session.user) applySession(session.user); });
+      sb.auth.onAuthStateChange((_e,session)=>{ if(session&&session.user&&(!authUser||authUser.id!==session.user.id)) applySession(session.user); });
     }catch(e){}
+    if(!hasSession) refreshCloudFeed();   // guests still see the real shared feed
   }
   if(!hasSession && !store.me.onboarded) openEditor("onboard");
 })();
