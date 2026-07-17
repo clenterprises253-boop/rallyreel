@@ -79,9 +79,13 @@
 
   /* ============ FEED ============ */
   #view-feed{position:relative; overflow:hidden; padding:0;}
-  .feed-head{position:absolute; top:0; left:0; right:0; z-index:40; display:flex; justify-content:center; gap:18px; padding:14px 20px 26px; background:linear-gradient(rgba(11,15,20,.9), rgba(11,15,20,0)); pointer-events:none;}
-  .feed-head span{font-weight:700; font-size:16px; color:var(--muted); cursor:pointer; padding-bottom:4px; pointer-events:auto;}
-  .feed-head span.on{color:var(--text); border-bottom:2.5px solid var(--accent);}
+  .feed-head{position:absolute; top:0; left:0; right:0; z-index:40; display:flex; align-items:center; justify-content:space-between; padding:12px 16px 26px; background:linear-gradient(rgba(11,15,20,.9), rgba(11,15,20,0)); pointer-events:none;}
+  .fh-tabs{display:flex; gap:18px;}
+  .feed-head span[data-feedtab]{font-weight:700; font-size:16px; color:var(--muted); cursor:pointer; padding-bottom:4px; pointer-events:auto;}
+  .feed-head span[data-feedtab].on{color:var(--text); border-bottom:2.5px solid var(--accent);}
+  .fh-ic{pointer-events:auto; background:none; border:none; color:#fff; cursor:pointer; padding:0; position:relative; width:26px; height:26px; flex-shrink:0; filter:drop-shadow(0 1px 4px rgba(0,0,0,.5));}
+  .fh-ic svg{width:24px; height:24px;}
+  .fh-badge{position:absolute; top:-4px; right:-4px; min-width:16px; height:16px; padding:0 4px; border-radius:99px; background:var(--danger); color:#fff; font-size:10px; font-weight:800; display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 2px var(--bg);}
 
   .feed-scroll{height:100%; overflow-y:scroll; scroll-snap-type:y mandatory; scrollbar-width:none; scroll-behavior:smooth;}
   .feed-scroll::-webkit-scrollbar{display:none;}
@@ -100,6 +104,7 @@
   .follow-btn{margin-left:4px; background:var(--accent); color:var(--accent-ink); border:none; font-family:inherit; font-weight:800; font-size:11.5px; padding:5px 13px; border-radius:99px; cursor:pointer; transition:all .15s;}
   .follow-btn.following{background:transparent; color:#fff; border:1px solid rgba(255,255,255,.45);}
   .clip-caption{font-size:13.5px; line-height:1.45; color:#e8eef4;}
+  .htag{color:var(--accent); font-weight:700; cursor:pointer;}
   .ai-badge{display:inline-flex; align-items:center; gap:5px; background:rgba(204,255,0,.16); border:1px solid rgba(204,255,0,.4); color:var(--accent); font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:99px; margin-bottom:8px; letter-spacing:.03em;}
   .clip-actions{position:absolute; right:12px; bottom:22px; display:flex; flex-direction:column; gap:16px; align-items:center; z-index:5;}
   .act{display:flex; flex-direction:column; align-items:center; gap:5px; color:#fff; font-size:11px; font-weight:700; cursor:pointer; border:none; background:none; font-family:inherit; width:52px;}
@@ -340,6 +345,45 @@
   .list-empty{text-align:center; color:var(--muted); font-size:13px; padding:40px 30px; line-height:1.6;}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 
+  /* profile editor / onboarding overlay */
+  .editor{position:absolute; inset:0; z-index:130; background:rgba(6,9,13,.72); backdrop-filter:blur(6px); display:none; align-items:center; justify-content:center; padding:20px;}
+  .editor.show{display:flex;}
+  .editor-card{width:100%; max-height:92%; overflow-y:auto; scrollbar-width:none; background:var(--panel); border:1px solid var(--line); border-radius:22px; padding:22px 20px;}
+  .editor-card::-webkit-scrollbar{display:none;}
+  .editor-card h2{font-size:21px; letter-spacing:-.02em; margin-bottom:4px;}
+  .ed-avarow{display:flex; align-items:center; gap:16px; margin:16px 0 8px;}
+  .ed-colors{display:flex; gap:9px; flex-wrap:wrap; flex:1;}
+  .ed-sw{width:28px; height:28px; border-radius:50%; cursor:pointer; border:2px solid transparent; transition:transform .12s;}
+  .ed-sw.on{border-color:#fff; transform:scale(1.15);}
+  .ed-l{display:block; font-size:11.5px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin:12px 0 5px;}
+  .ed-in{width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:12px; color:var(--text); font-family:inherit; font-size:14px; padding:12px 13px;}
+  .ed-in:focus{outline:none; border-color:var(--accent);}
+  select.ed-in{appearance:none; -webkit-appearance:none;}
+  .ed-row{display:flex; gap:12px;}
+
+  /* search */
+  .search-bar{display:flex; gap:9px; padding:0 16px 12px; position:sticky; top:0; background:var(--bg); z-index:2;}
+  .search-bar input{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:99px; padding:12px 16px; color:var(--text); font-family:inherit; font-size:14px;}
+  .search-bar input:focus{outline:none; border-color:var(--accent);}
+  .sec-h{font-size:12px; font-weight:800; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; padding:6px 16px 8px;}
+  .tag-row{display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 10px;}
+  .tag-chip{background:var(--panel2); border:1px solid var(--line); border-radius:99px; padding:8px 14px; font-size:13px; font-weight:700; cursor:pointer; color:var(--text);}
+  .tag-chip:hover{border-color:var(--accent); color:var(--accent);}
+  .ex-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:5px; padding:4px 12px 20px;}
+  .ex-cell{aspect-ratio:3/4; border-radius:10px; overflow:hidden; position:relative; cursor:pointer;}
+  .ex-cell .views{position:absolute; bottom:5px; left:6px; font-size:10px; font-weight:700; text-shadow:0 1px 4px #000; z-index:2;}
+
+  /* notifications */
+  .nrow{display:flex; align-items:center; gap:12px; padding:13px 16px; border-bottom:1px solid rgba(255,255,255,.06); cursor:pointer;}
+  .nrow.unread{background:rgba(204,255,0,.05);}
+  .nrow .n-ic{width:22px; text-align:center; font-size:15px; flex-shrink:0;}
+  .nrow .who{flex:1; display:flex; align-items:center; gap:11px; min-width:0;}
+  .nrow .who .ntxt{font-size:13px; line-height:1.4;}
+  .nrow .who .ntxt b{font-weight:700;}
+  .nrow .who .ntxt small{color:var(--muted); font-size:11px; margin-left:4px;}
+  .nrow .n-dot{width:8px; height:8px; border-radius:50%; background:var(--accent); flex-shrink:0;}
+  .nrow .follow-btn{flex-shrink:0;}
+
   .toast{
     position:absolute; left:50%; transform:translateX(-50%) translateY(20px); bottom:100px;
     background:var(--accent); color:var(--accent-ink); font-weight:800; font-size:13px;
@@ -394,9 +438,18 @@
     <!-- ================= FEED ================= -->
     <div class="view active" id="view-feed">
       <div class="feed-head">
-        <span class="on" data-feedtab="foryou">For You</span>
-        <span data-feedtab="following">Following</span>
-        <span data-feedtab="club">Clubs</span>
+        <button class="fh-ic" id="bell-btn" onclick="openNotifications()" title="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="fh-badge" id="notif-badge" style="display:none"></span>
+        </button>
+        <div class="fh-tabs">
+          <span class="on" data-feedtab="foryou">For You</span>
+          <span data-feedtab="following">Following</span>
+          <span data-feedtab="club">Clubs</span>
+        </div>
+        <button class="fh-ic" onclick="openSearch()" title="Search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        </button>
       </div>
       <div class="feed-scroll" id="feed-scroll"></div>
     </div>
@@ -524,15 +577,15 @@
     <!-- ================= PROFILE ================= -->
     <div class="view" id="view-profile">
       <div class="prof-head">
-        <div class="prof-ava">T</div>
-        <h2 class="page-title" style="font-size:21px;">Tanner</h2>
-        <p class="sub">4.0 · Westside Tennis Club · lefty forehand merchant</p>
+        <div class="prof-ava" id="prof-ava">T</div>
+        <h2 class="page-title" style="font-size:21px;" id="prof-name">Tanner</h2>
+        <p class="sub" id="prof-tagline">4.0 · Westside Tennis Club · lefty forehand merchant</p>
         <div class="prof-stats">
           <div class="tap" onclick="openFollowers()"><b id="stat-followers">0</b><span>followers</span></div>
           <div class="tap" onclick="openFollowing()"><b id="stat-following">0</b><span>following</span></div>
           <div><b id="stat-clips">0</b><span>clips</span></div>
         </div>
-        <span class="streak">🎾 beta account</span>
+        <button class="btn ghost sm" style="width:auto; margin-top:12px; padding:9px 20px;" onclick="openEditProfile()">✏️ Edit profile</button>
       </div>
       <div style="padding:4px 16px 0;">
         <button class="btn" id="btn-reel" onclick="makeReel(this)">🎬 &nbsp;Create season highlight reel</button>
@@ -622,6 +675,38 @@
       <div class="swipe-hint">swipe →</div>
     </div>
 
+    <!-- ============ PROFILE EDITOR / ONBOARDING ============ -->
+    <div class="editor" id="editor">
+      <div class="editor-card">
+        <h2 id="ed-title">Welcome to RallyReel 🎾</h2>
+        <p class="sub" id="ed-sub">Set up your player profile so your clips are yours.</p>
+        <div class="ed-avarow">
+          <div class="prof-ava" id="ed-ava" style="width:64px;height:64px;font-size:26px;">T</div>
+          <div class="ed-colors" id="ed-colors"></div>
+        </div>
+        <label class="ed-l">Display name</label>
+        <input class="ed-in" id="ed-name" maxlength="24" placeholder="Your name">
+        <label class="ed-l">Handle</label>
+        <input class="ed-in" id="ed-handle" maxlength="24" placeholder="@yourhandle">
+        <div class="ed-row">
+          <div style="flex:1;">
+            <label class="ed-l">NTRP rating</label>
+            <select class="ed-in" id="ed-rating">
+              <option>2.5</option><option>3.0</option><option>3.5</option><option selected>4.0</option><option>4.5</option><option>5.0</option><option>5.5+</option>
+            </select>
+          </div>
+          <div style="flex:1;">
+            <label class="ed-l">Home club</label>
+            <input class="ed-in" id="ed-club" maxlength="30" placeholder="Your club">
+          </div>
+        </div>
+        <label class="ed-l">Bio</label>
+        <input class="ed-in" id="ed-bio" maxlength="60" placeholder="One line about your game">
+        <button class="btn" id="ed-save" style="margin-top:18px;" onclick="saveProfile()">Save</button>
+        <button class="btn ghost sm" id="ed-cancel" style="margin-top:10px;" onclick="closeEditor()">Cancel</button>
+      </div>
+    </div>
+
     <div class="toast" id="toast"></div>
   </div>
 </div>
@@ -646,24 +731,32 @@ const store = {
   following: new Set(),   // account ids the user follows
   network: [      // fake account network — real, interactive
     {id:"u_maria", name:"Maria K.", handle:"@mk_topspin", color:"#4f9cf9", bio:"4.5 · clay-court specialist · lefty", followers:1240, following:312, posts:[
-      {id:"m1", court:"clay", shots:9, cap:"Clay season = sliding season 🟠", likes:214, comments:[{n:"Devon",c:2,t:"3h",p:"The slide into the backhand… teach me"}], time:"5h"},
-      {id:"m2", court:"clay", shots:12, cap:"14 shots then a drop volley. Patience pays 🎾", likes:389, comments:[], time:"2d"} ]},
+      {id:"m1", court:"clay", shots:9, cap:"Clay season = sliding season 🟠 #clay #tennis", likes:214, comments:[{n:"Devon",c:2,t:"3h",p:"The slide into the backhand… teach me"}], time:"5h"},
+      {id:"m2", court:"clay", shots:12, cap:"14 shots then a drop volley. Patience pays 🎾 #clay #rally", likes:389, comments:[], time:"2d"} ]},
     {id:"u_devon", name:"Devon", handle:"@devo_serves", color:"#e07a5f", bio:"Big serve, questionable backhand 😅", followers:842, following:504, posts:[
-      {id:"d1", court:"grass", shots:6, cap:"Called the ace before I hit it 😤", likes:158, comments:[{n:"Maria K.",c:0,t:"7h",p:"Calling it first is elite trash talk"}], time:"8h"},
-      {id:"d2", court:"", shots:4, cap:"Serve +1 forehand, textbook 📐", likes:96, comments:[], time:"3d"} ]},
+      {id:"d1", court:"grass", shots:6, cap:"Called the ace before I hit it 😤 #serve #grass", likes:158, comments:[{n:"Maria K.",c:0,t:"7h",p:"Calling it first is elite trash talk"}], time:"8h"},
+      {id:"d2", court:"", shots:4, cap:"Serve +1 forehand, textbook 📐 #serve #forehand", likes:96, comments:[], time:"3d"} ]},
     {id:"u_lena", name:"Coach Lena", handle:"@lena_tennis_academy", color:"#7ac74f", bio:"Head coach · Westside Academy · dev juniors", followers:5100, following:180, posts:[
-      {id:"l1", court:"", shots:11, cap:"Junior squad Friday — auto-reels for all 6 players 📎", likes:97, comments:[{n:"Parent of #3",c:3,t:"20h",p:"Grandma watched it 5 times ❤️"}], time:"1d"} ]},
+      {id:"l1", court:"", shots:11, cap:"Junior squad Friday — auto-reels for all 6 players 📎 #coaching #tennis", likes:97, comments:[{n:"Parent of #3",c:3,t:"20h",p:"Grandma watched it 5 times ❤️"}], time:"1d"} ]},
     {id:"u_priya", name:"Priya T.", handle:"@priya_baseline", color:"#f9c74f", bio:"3.5 → 4.0 this year 📈 grinding", followers:410, following:288, posts:[
-      {id:"p1", court:"", shots:8, cap:"First tournament win 🏆 the backhand held up", likes:271, comments:[{n:"Coach Lena",c:2,t:"6h",p:"So proud of this one 👏"}], time:"11h"} ]},
+      {id:"p1", court:"", shots:8, cap:"First tournament win 🏆 the backhand held up #backhand #winner", likes:271, comments:[{n:"Coach Lena",c:2,t:"6h",p:"So proud of this one 👏"}], time:"11h"} ]},
     {id:"u_marcus", name:"Marcus R.", handle:"@marcus_returns", color:"#c77dff", bio:"Hitting partner for hire · 4.0", followers:333, following:421, posts:[
-      {id:"mr1", court:"grass", shots:7, cap:"Grass court cameo. Slippery out here ☘️", likes:120, comments:[], time:"1d"} ]},
+      {id:"mr1", court:"grass", shots:7, cap:"Grass court cameo. Slippery out here ☘️ #grass #tennis", likes:120, comments:[], time:"1d"} ]},
     {id:"u_jules", name:"Jules", handle:"@onehandedjules", color:"#4dd0e1", bio:"One-handed backhand supremacist 🎾", followers:1890, following:96, posts:[
-      {id:"j1", court:"clay", shots:10, cap:"The one-hander down the line will never get old", likes:502, comments:[{n:"Devon",c:1,t:"9h",p:"art"}], time:"14h"} ]},
+      {id:"j1", court:"clay", shots:10, cap:"The one-hander down the line will never get old #backhand #tennis", likes:502, comments:[{n:"Devon",c:1,t:"9h",p:"art"}], time:"14h"} ]},
     {id:"u_westside", name:"Westside TC", handle:"@westside_tennis", color:"#ccff00", bio:"Your home courts 🏟️ league nights Weds", followers:2600, following:64, posts:[
-      {id:"w1", court:"", shots:13, cap:"Weekly Top 10 is live — who made the reel? 👀", likes:188, comments:[], time:"2d"} ]}
+      {id:"w1", court:"", shots:13, cap:"Weekly Top 10 is live — who made the reel? 👀 #club #tennis", likes:188, comments:[], time:"2d"} ]}
   ],
   followers: new Set(["u_lena","u_westside","u_marcus"]),  // accounts that follow you
-  fypOrder: []    // shuffled mix for For You (built at init)
+  fypOrder: [],   // shuffled mix for For You (built at init)
+  me: { name:"Tanner", handle:"@tanner_4point0", rating:"4.0", club:"Westside Tennis Club", bio:"lefty forehand merchant", color:"#ccff00", onboarded:false },
+  notifications: [
+    {id:"n1", type:"follow",  who:"u_lena",     time:"2h", read:false},
+    {id:"n2", type:"like",    who:"u_maria",    time:"5h", read:false, text:"liked your highlight"},
+    {id:"n3", type:"comment", who:"u_devon",    time:"8h", read:false, text:"clean footwork 👟"},
+    {id:"n4", type:"follow",  who:"u_marcus",   time:"1d", read:true},
+    {id:"n5", type:"like",    who:"u_westside", time:"1d", read:true, text:"featured you in Weekly Top 10 🏆"}
+  ]
 };
 // wire author refs + kind onto each network post, seed following, build FYP order
 store.network.forEach(a=>a.posts.forEach(p=>{ p.author=a; p.kind="net"; p.liked=false; }));
@@ -691,7 +784,7 @@ function saveState(){
       clips: store.clips.map(c=>{ const {url,...rest}=c; return rest; }),   // url recreated from blob on load
       sessions: store.sessions.map(s=>({...s, date:(s.date instanceof Date?s.date:new Date(s.date)).toISOString()})),
       following:[...store.following], followers:[...store.followers],
-      welcomed, autoCrop,
+      welcomed, autoCrop, me:store.me, notifications:store.notifications,
       net: store.network.map(a=>({id:a.id, followers:a.followers, posts:a.posts.map(p=>({id:p.id, likes:p.likes, liked:p.liked, comments:p.comments}))}))
     };
     localStorage.setItem("rallyreel-state", JSON.stringify(data));
@@ -706,6 +799,8 @@ async function loadState(){
   store.following=new Set(data.following||[]);
   if(data.followers) store.followers=new Set(data.followers);
   welcomed=!!data.welcomed; autoCrop=data.autoCrop!==false;
+  if(data.me) Object.assign(store.me, data.me);
+  if(Array.isArray(data.notifications)) store.notifications=data.notifications;
   store.sessions=(data.sessions||[]).map(s=>({...s, date:new Date(s.date)}));
   const clips=data.clips||[];
   const keys=[...new Set(clips.map(c=>c.blobKey).filter(Boolean))];
@@ -771,11 +866,11 @@ function mineCardHTML(c){
         <div class="ai-badge">✦ AI auto-highlight · real clip</div>
         <div class="clip-user">
           <div class="who" style="display:flex;align-items:center;gap:9px;">
-            <div class="avatar" style="background:${AV_COLORS[0]}">T</div>
-            <div><b>Tanner</b><small>@tanner_4point0 · ${c.sess} · 🔥 ${c.score}</small></div>
+            <div class="avatar" style="background:${store.me.color}">${store.me.name[0]||"T"}</div>
+            <div><b>${store.me.name}</b><small>${store.me.handle} · ${c.sess} · 🔥 ${c.score}</small></div>
           </div>
         </div>
-        <div class="clip-caption">${c.caption}</div>
+        <div class="clip-caption">${linkifyTags(c.caption)}</div>
       </div>
     </div></div>`;
 }
@@ -795,9 +890,12 @@ function netCardHTML(p){
           </div>
           <button class="follow-btn${isF?" following":""}" id="fb-${a.id}" onclick="toggleFollow('${a.id}')">${isF?"Following":"Follow"}</button>
         </div>
-        <div class="clip-caption">${p.cap}</div>
+        <div class="clip-caption">${linkifyTags(p.cap)}</div>
       </div>
     </div></div>`;
+}
+function linkifyTags(text){
+  return (text||"").replace(/#([\p{L}\p{N}_]+)/gu, (m,tag)=>`<span class="htag" onclick="event.stopPropagation();openSearch('#${tag}')">#${tag}</span>`);
 }
 function slideBanner(emoji,title,sub){
   return `<div class="reel-slide slide-banner"><div class="club-banner"><div class="emoji">${emoji}</div><b>${title}</b><span>${sub}</span></div></div>`;
@@ -916,6 +1014,146 @@ function closePanel(){ const p=$("panel"); p.classList.remove("dragging"); p.sty
     window.addEventListener("pointerup",up); window.addEventListener("pointercancel",up);
   });
 })();
+
+/* ============================================================
+   PROFILE EDITOR + ONBOARDING
+   ============================================================ */
+const AVATAR_PALETTE=["#ccff00","#4f9cf9","#e07a5f","#7ac74f","#f9c74f","#c77dff","#4dd0e1","#ff5d73"];
+let editColor="#ccff00";
+function renderMe(){
+  const m=store.me;
+  $("prof-ava").textContent=m.name[0]||"?"; $("prof-ava").style.background=m.color;
+  $("prof-name").textContent=m.name;
+  $("prof-tagline").textContent=`${m.rating} · ${m.club}${m.bio?" · "+m.bio:""}`;
+  const av=document.querySelector(".apphead .avatar"); if(av){ av.textContent=m.name[0]||"?"; av.style.background=m.color; }
+}
+function openEditor(mode){
+  const m=store.me, onboard=(mode==="onboard");
+  $("ed-title").textContent=onboard?"Welcome to RallyReel 🎾":"Edit profile";
+  $("ed-sub").textContent=onboard?"Set up your player profile so your clips are yours.":"Update how you show up across RallyReel.";
+  $("ed-name").value=onboard?"":m.name;
+  $("ed-handle").value=onboard?"":m.handle;
+  $("ed-rating").value=m.rating;
+  $("ed-club").value=onboard?"":m.club;
+  $("ed-bio").value=onboard?"":m.bio;
+  editColor=m.color;
+  $("ed-colors").innerHTML=AVATAR_PALETTE.map(c=>`<div class="ed-sw${c===editColor?" on":""}" style="background:${c}" onclick="pickColor('${c}')"></div>`).join("");
+  $("ed-cancel").style.display=onboard?"none":"block";
+  syncEdAva();
+  $("editor").classList.add("show");
+  $("ed-name").oninput=syncEdAva;
+}
+function pickColor(c){ editColor=c; document.querySelectorAll(".ed-sw").forEach(s=>s.classList.toggle("on", s.style.background===c || rgbToHex(s.style.background)===c)); syncEdAva(); }
+function rgbToHex(rgb){ const m=rgb.match(/\d+/g); if(!m) return rgb; return "#"+m.slice(0,3).map(x=>(+x).toString(16).padStart(2,"0")).join(""); }
+function syncEdAva(){ const n=$("ed-name").value.trim(); $("ed-ava").textContent=(n[0]||"?").toUpperCase(); $("ed-ava").style.background=editColor; }
+function openEditProfile(){ openEditor("edit"); }
+function closeEditor(){ $("editor").classList.remove("show"); }
+function saveProfile(){
+  const name=$("ed-name").value.trim()||"Player";
+  let handle=$("ed-handle").value.trim()||("@"+name.toLowerCase().replace(/[^a-z0-9]/g,""));
+  if(!handle.startsWith("@")) handle="@"+handle;
+  Object.assign(store.me,{
+    name, handle,
+    rating:$("ed-rating").value,
+    club:$("ed-club").value.trim()||"Unattached",
+    bio:$("ed-bio").value.trim(),
+    color:editColor, onboarded:true
+  });
+  closeEditor(); renderMe(); buildFeed(); renderProfile(); saveState();
+  toast("Profile saved 🎾");
+}
+
+/* ============================================================
+   SEARCH & DISCOVERY
+   ============================================================ */
+function openSearch(prefill){
+  $("panel-title").textContent="Search";
+  $("panel-body").innerHTML=`
+    <div class="search-bar"><input id="search-in" placeholder="Search players, #hashtags…" oninput="runSearch(this.value)"></div>
+    <div id="search-results"></div>`;
+  openPanel();
+  const inp=$("search-in");
+  runSearch(prefill||"");
+  if(prefill){ inp.value=prefill; runSearch(prefill); }
+  setTimeout(()=>inp.focus(),200);
+}
+function allTags(){
+  const t=new Set();
+  store.network.flatMap(a=>a.posts).forEach(p=>(p.cap.match(/#[\p{L}\p{N}_]+/gu)||[]).forEach(x=>t.add(x)));
+  ["#tennis","#clay","#serve","#backhand","#winner"].forEach(x=>t.add(x));
+  return [...t];
+}
+function runSearch(q){
+  q=(q||"").trim().toLowerCase();
+  const box=$("search-results");
+  if(!q){
+    // default: trending tags + explore grid
+    const posts=store.network.flatMap(a=>a.posts);
+    box.innerHTML=`
+      <div class="sec-h">Trending</div>
+      <div class="tag-row">${allTags().slice(0,7).map(t=>`<div class="tag-chip" onclick="searchTag('${t}')">${t}</div>`).join("")}</div>
+      <div class="sec-h">Suggested players</div>
+      ${store.network.slice(0,4).map(accountRow).join("")}
+      <div class="sec-h">Explore</div>
+      <div class="ex-grid">${posts.map(p=>`<div class="ex-cell" onclick="openProfile('${p.author.id}')">${courtHTML(p.court)}<span class="views">▶ ${p.shots}-shot</span></div>`).join("")}</div>`;
+    return;
+  }
+  const tagQ=q.replace(/^#/,"");
+  const people=store.network.filter(a=>a.name.toLowerCase().includes(q)||a.handle.toLowerCase().includes(q));
+  const clips=store.network.flatMap(a=>a.posts).filter(p=>p.cap.toLowerCase().includes(q) || p.cap.toLowerCase().includes("#"+tagQ));
+  let html="";
+  if(people.length){ html+=`<div class="sec-h">Players</div>`+people.map(accountRow).join(""); }
+  if(clips.length){ html+=`<div class="sec-h">Clips</div><div class="ex-grid">`+clips.map(p=>`<div class="ex-cell" onclick="openProfile('${p.author.id}')">${courtHTML(p.court)}<span class="views">▶ ${p.shots}-shot</span></div>`).join("")+`</div>`; }
+  box.innerHTML=html||`<div class="list-empty">No results for "${q}".<br>Try a player name or a #hashtag.</div>`;
+}
+function searchTag(t){ const inp=$("search-in"); if(inp){ inp.value=t; runSearch(t); } }
+
+/* ============================================================
+   NOTIFICATIONS
+   ============================================================ */
+function unreadCount(){ return store.notifications.filter(n=>!n.read).length; }
+function renderNotifBadge(){
+  const n=unreadCount(), b=$("notif-badge");
+  if(n>0){ b.textContent=n; b.style.display="flex"; } else b.style.display="none";
+}
+const NOTIF_IC={like:"❤️", follow:"➕", comment:"💬"};
+function notifText(n){
+  const verb = n.type==="follow" ? "started following you" : (n.text || (n.type==="like"?"liked your clip":"commented"));
+  return `<b>${n.who&&store.network.find(a=>a.id===n.who)?store.network.find(a=>a.id===n.who).name:"Someone"}</b> ${verb}<small>${n.time}</small>`;
+}
+function openNotifications(){
+  $("panel-title").textContent="Notifications";
+  const rows = store.notifications.length ? store.notifications.map(n=>{
+    const a=store.network.find(x=>x.id===n.who);
+    const isF=a&&store.following.has(a.id);
+    return `<div class="nrow${n.read?"":" unread"}">
+      <span class="n-ic">${NOTIF_IC[n.type]||"🔔"}</span>
+      <div class="who" onclick="${a?`openProfile('${a.id}')`:''}">
+        <div class="avatar" style="background:${a?a.color:'#556'}">${a?a.name[0]:'?'}</div>
+        <div class="ntxt">${notifText(n)}</div>
+      </div>
+      ${n.type==="follow"&&a?`<button class="follow-btn${isF?" following":""}" id="fb-${a.id}" onclick="toggleFollow('${a.id}')">${isF?"Following":"Follow back"}</button>`:(n.read?"":`<span class="n-dot"></span>`)}
+    </div>`;
+  }).join("") : `<div class="list-empty">No notifications yet.<br>Post clips and follow players to get activity.</div>`;
+  $("panel-body").innerHTML=rows;
+  openPanel();
+  store.notifications.forEach(n=>n.read=true);
+  renderNotifBadge(); saveState();
+}
+function pushNotification(n){
+  store.notifications.unshift({id:"n"+Math.random().toString(36).slice(2,8), read:false, time:"now", ...n});
+  renderNotifBadge(); saveState();
+}
+/* simulate incoming activity after the user posts */
+function simulateActivity(){
+  const pool=store.network.map(a=>a.id);
+  const picks=[...pool].sort(()=>0.5-Math.random()).slice(0,2);
+  const kinds=[{type:"like",text:"liked your new highlight 🔥"},{type:"follow"},{type:"comment",text:"that rally was unreal"}];
+  picks.forEach((who,i)=>{
+    const k=kinds[Math.floor(Math.random()*kinds.length)];
+    setTimeout(()=>{ pushNotification({who, ...k}); toast(`🔔 ${store.network.find(a=>a.id===who).name} ${k.type==="follow"?"followed you":k.text}`); }, 2500 + i*4000);
+  });
+}
 
 /* double-tap-to-like with heart burst (Instagram/TikTok style: always likes, never unlikes) */
 function handleDoubleTap(e, kind, id){
@@ -1400,6 +1638,7 @@ function publishClips(){
   switchTab(document.querySelector('.tab[data-view="view-feed"]'));
   $("feed-scroll").scrollTop=0;
   toast(`${kept.length} real clip${kept.length!==1?"s":""} posted 🎾🔥`);
+  simulateActivity();
 }
 
 async function downloadKeepers(btn){
@@ -1615,6 +1854,7 @@ function renderGame(){
 }
 function renderProfile(){
   const C=store.clips, S=store.sessions;
+  renderMe();
   $("stat-followers").textContent=store.followers.size;
   $("stat-following").textContent=store.following.size;
   $("stat-clips").textContent=C.length;
@@ -1628,11 +1868,13 @@ function renderProfile(){
 }
 
 /* expose + init */
-Object.assign(window,{switchTab,showStep,togglePlay,likePost,openComments,sendComment,openShare,shareTo,closeSheets,previewSeg,setKeep,gotoPost,publishClips,downloadKeepers,dismissWelcome,removeActiveClip,cancelAnalysis,setSensitivity,nudgeSeg,handleDoubleTap,setAutoCrop,toggleFollow,openProfile,openFollowers,openFollowing,closePanel,makeReel});
+Object.assign(window,{switchTab,showStep,togglePlay,likePost,openComments,sendComment,openShare,shareTo,closeSheets,previewSeg,setKeep,gotoPost,publishClips,downloadKeepers,dismissWelcome,removeActiveClip,cancelAnalysis,setSensitivity,nudgeSeg,handleDoubleTap,setAutoCrop,toggleFollow,openProfile,openFollowers,openFollowing,closePanel,makeReel,openEditProfile,openEditor,closeEditor,saveProfile,pickColor,openSearch,runSearch,searchTag,openNotifications});
 (async function init(){
   await loadState();
   document.querySelectorAll("#sw-crop-review,#sw-crop-settings").forEach(sw=>sw&&sw.classList.toggle("on",autoCrop));
+  renderMe(); renderNotifBadge();
   buildFeed(); renderGame(); renderProfile();
+  if(!store.me.onboarded) openEditor("onboard");
 })();
 </script>
 </body>
