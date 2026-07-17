@@ -2025,13 +2025,16 @@ async function analyzeWebCodecs(file, duration){
   const cv=document.createElement("canvas"); cv.width=W; cv.height=H;
   const cx=cv.getContext("2d",{willReadFrequently:true});
   let prev=null;
-  const lumaDiff=f=>{
+  const lumaDiff=(f,detectCuts)=>{
     cx.drawImage(f,0,0,W,H);
     const d=cx.getImageData(0,0,W,H).data, luma=new Float32Array(W*H);
     for(let p=0;p<W*H;p++) luma[p]=d[p*4]*.299+d[p*4+1]*.587+d[p*4+2]*.114;
     let m=0,mx=0;
     if(prev){ for(let p=0;p<W*H;p++){ if(Math.abs(luma[p]-prev[p])>14){ m++; mx+=(p%W); } } }
-    const out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
+    let out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
+    /* hard camera cut (broadcast edit, replay, graphic): nearly the whole
+       frame changes at fine sampling — that's editing, not tennis motion */
+    if(detectCuts && prev && out.m>.45){ out={m:0, x:.5, cut:true}; }
     prev=luma; return out;
   };
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -2125,7 +2128,7 @@ async function analyzeWebCodecs(file, duration){
   /* ---------- PASS 2: fine decode inside active regions only ---------- */
   const totalRegion=regions.reduce((a,r)=>a+(r.e-r.s),0);
   const dB=clamp(totalRegion/2500,.2,1);
-  const fT=[], fM=[], fX=[];
+  const fT=[], fM=[], fX=[], cuts=[];
   const thumbs=[]; let lastThumbT=-9;
   const tcv=document.createElement("canvas"); tcv.width=288; tcv.height=162;
   const tcx=tcv.getContext("2d");
@@ -2137,7 +2140,8 @@ async function analyzeWebCodecs(file, duration){
       const t=f.timestamp/1e6, ri=regionAt(t);
       if(ri>=0 && t-lastKept>=dB){
         if(ri!==lastRegion){ prev=null; lastRegion=ri; }
-        const r=lumaDiff(f);
+        const r=lumaDiff(f,true);
+        if(r.cut) cuts.push(t);
         fT.push(t); fM.push(r.m); fX.push(r.x); lastKept=t;
         /* free thumbnails at decoder speed — no post-pass seeking needed */
         if(t-lastThumbT>=2.5 && thumbs.length<500){
@@ -2196,7 +2200,7 @@ async function analyzeWebCodecs(file, duration){
   merged.sort((a,b)=>a.t-b.t);
   if(merged.length<8) throw new Error("fast engine produced too few samples");
   return {grid:merged.map(o=>o.t), motion:merged.map(o=>o.m), motionX:merged.map(o=>o.x),
-          audioRMS, onsets, audioNote, duration:duration_, vw, vh, thumbs};
+          audioRMS, onsets, audioNote, duration:duration_, vw, vh, thumbs, cuts};
 }
 
 let analysisCancelled=false;
@@ -2243,7 +2247,7 @@ async function analyze(file){
 
   /* ---- FAST ENGINE first: WebCodecs + mp4box (MP4/MOV, any length) ---- */
   let audioRMS=null, onsets=null; const HOP=.05;
-  let grid=[], motion=[], motionX=[];
+  let grid=[], motion=[], motionX=[], cuts=[];
   let fast=null;
   if(canFast){
     try{ fast=await analyzeWebCodecs(file, duration); }
@@ -2252,7 +2256,7 @@ async function analyze(file){
   if(analysisCancelled){ keepAwake(false); return; }
   if(!fast && !duration){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
   if(fast){
-    grid=fast.grid; motion=fast.motion; motionX=fast.motionX;
+    grid=fast.grid; motion=fast.motion; motionX=fast.motionX; cuts=fast.cuts||[];
     audioRMS=fast.audioRMS; onsets=fast.onsets;
     if(!duration){ duration=fast.duration; $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`; }
     $("ps0-t").textContent=fast.audioNote;
@@ -2289,14 +2293,15 @@ async function analyze(file){
   const W=96,H=54, cv2=document.createElement("canvas"); cv2.width=W; cv2.height=H;
   const cx=cv2.getContext("2d",{willReadFrequently:true});
   let prev=null;
-  const grabAt=async(t,fast)=>{
-    await new Promise(r=>{ v.onseeked=r; if(fast&&v.fastSeek) v.fastSeek(Math.min(t,duration-.05)); else v.currentTime=Math.min(t,duration-.05); });
+  const grabAt=async(t,coarse)=>{
+    await new Promise(r=>{ v.onseeked=r; if(coarse&&v.fastSeek) v.fastSeek(Math.min(t,duration-.05)); else v.currentTime=Math.min(t,duration-.05); });
     cx.drawImage(v,0,0,W,H);
     const d=cx.getImageData(0,0,W,H).data, luma=new Float32Array(W*H);
     for(let p=0;p<W*H;p++) luma[p]=d[p*4]*.299+d[p*4+1]*.587+d[p*4+2]*.114;
     let m=0,mx=0;
     if(prev){ for(let p=0;p<W*H;p++){ if(Math.abs(luma[p]-prev[p])>14){ m++; mx+=(p%W); } } }
-    const out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
+    let out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
+    if(!coarse && prev && out.m>.45){ cuts.push(t); out={m:0, x:.5}; }   // hard camera cut ≠ tennis motion
     prev=luma;
     return out;
   };
@@ -2383,7 +2388,7 @@ async function analyze(file){
 
   if(analysisCancelled){ keepAwake(false); return; }
   const aw=v.videoWidth||(fast&&fast.vw)||0, ah=v.videoHeight||(fast&&fast.vh)||0;
-  analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,hasAudio:!!audioRMS,
+  analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,cuts,hasAudio:!!audioRMS,
              vw:aw, vh:ah, srcAR:(aw&&ah)?aw/ah:16/9,
              videoEl:v, thumbCache:(fast&&fast.thumbs&&fast.thumbs.length)?fast.thumbs:null,
              sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
@@ -2443,6 +2448,18 @@ function computeSegments(hiMul, loMul){
   for(const s of raw){ if(merged.length && s.s-merged[merged.length-1].e<2) merged[merged.length-1].e=s.e; else merged.push(s); }
   let segs=merged.filter(s=>s.e-s.s>=2.5).map(s=>({start:Math.max(0,s.s-.8), end:Math.min(duration,s.e+.8)}));
   segs=segs.flatMap(s=> s.end-s.start>40 ? splitLongSeg(s,32) : [s]);
+  /* snap boundaries to the ball-strike span — clips start at the serve,
+     not at whatever motion woke the detector up */
+  if(analysis.hasAudio && analysis.onsets && analysis.onsets.length){
+    for(const s of segs){
+      const oi=analysis.onsets.filter(t=>t>=s.start&&t<=s.end);
+      if(oi.length>=3){
+        s.start=Math.max(s.start, oi[0]-1.2);
+        s.end=Math.min(s.end, oi[oi.length-1]+1.8);
+      }
+    }
+    segs=segs.filter(s=>s.end-s.start>=2.5);
+  }
   segs.forEach(rescoreSeg);
   segs.sort((a,b)=>b.score-a.score);
   return segs.slice(0,MAX_CLIPS);   // up to 20 clips per upload
@@ -2456,9 +2473,18 @@ function rescoreSeg(s){
     const w=smooth[i]||0; if(motionX && motionX[i]!==undefined){ xsum+=w*motionX[i]; wsum+=w; }
   }
   const dur=s.end-s.start;
-  const od=onsets?onsets.filter(t=>t>=s.start&&t<=s.end).length/dur:0;
-  s.score=Math.round(clamp(55*(n?sum/n:0)/(mean+.55*sd)+25*clamp(dur/12,0,1)+20*clamp(od/1.5,0,1),5,99));
-  s.onsets=onsets?onsets.filter(t=>t>=s.start&&t<=s.end).length:null;
+  const oc=onsets?onsets.filter(t=>t>=s.start&&t<=s.end).length:null;
+  const od=oc!==null?oc/dur:0;
+  let sc=clamp(55*(n?sum/n:0)/(mean+.55*sd)+25*clamp(dur/12,0,1)+20*clamp(od/1.5,0,1),5,99);
+  /* audio gate: the footage HAS ball-strike audio but this segment has
+     almost none → it's crowd / replays / talking heads, not a point */
+  if(onsets && onsets.length>10 && oc<Math.max(2,dur*.2)) sc*=.45;
+  /* cut penalty: dense hard cuts = broadcast editing, not continuous play */
+  const cutN=(analysis.cuts||[]).filter(t=>t>=s.start&&t<=s.end).length;
+  const cutRate=cutN/dur;
+  if(cutRate>.2) sc*=clamp(1-(cutRate-.2)*1.6, .3, 1);
+  s.score=Math.round(clamp(sc,5,99));
+  s.onsets=oc;
   s.cropX=wsum>0 ? clamp(xsum/wsum,0,1) : .5;
 }
 async function regrabThumb(s){
