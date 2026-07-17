@@ -493,7 +493,7 @@
           <div class="dropzone" id="dz">
             <div class="big">🎾</div>
             <b>Drop match footage or tap to browse</b>
-            <span class="sub">MP4 / MOV / WebM · best under ~15 min in beta</span>
+            <span class="sub">MP4 / MOV / WebM · full matches supported — 90 min+ footage welcome</span>
             <input type="file" id="file" accept="video/*" style="display:none">
           </div>
           <button class="btn ghost sm" id="btn-demo">⚗️ No footage? Generate a demo match (~40 s)</button>
@@ -515,7 +515,7 @@
             </div>
             <div class="proc-steps">
               <div class="pstep" id="ps0"><div class="pdot">1</div><span id="ps0-t">Decoding audio track</span></div>
-              <div class="pstep" id="ps1"><div class="pdot">2</div><span>Scanning frames for motion</span></div>
+              <div class="pstep" id="ps1"><div class="pdot">2</div><span id="ps1-t">Scanning frames for motion</span></div>
               <div class="pstep" id="ps2"><div class="pdot">3</div><span>Scoring rallies · cutting points</span></div>
               <div class="pstep" id="ps3"><div class="pdot">4</div><span>Grabbing thumbnails</span></div>
             </div>
@@ -1927,12 +1927,21 @@ function ringProgress(p, stage){
 }
 
 let analysisCancelled=false;
-function cancelAnalysis(){ analysisCancelled=true; showStep("u-pick"); toast("Analysis cancelled"); }
+let wakeLock=null;
+async function keepAwake(on){
+  try{
+    if(on && "wakeLock" in navigator){ wakeLock=await navigator.wakeLock.request("screen"); }
+    else if(!on && wakeLock){ await wakeLock.release(); wakeLock=null; }
+  }catch(e){}
+}
+function cancelAnalysis(){ analysisCancelled=true; keepAwake(false); showStep("u-pick"); toast("Analysis cancelled"); }
 
 async function analyze(file){
   analysisCancelled=false;
   switchTab(document.querySelector('.tab-fab'));
   showStep("u-proc");
+  keepAwake(true);
+  const mins=v=>v>=60?`${Math.floor(v/60)}h ${Math.round(v%60)}m`:`${Math.round(v)}m`;
   $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB`;
   ringProgress(2,0);
 
@@ -1940,16 +1949,18 @@ async function analyze(file){
   const v=document.createElement("video");
   v.muted=true; v.playsInline=true; v.preload="auto"; v.src=url;
   try{ await new Promise((res,rej)=>{ v.onloadedmetadata=res; v.onerror=()=>rej(new Error("unreadable video")); }); }
-  catch(e){ toast("Couldn't read that video file"); showStep("u-pick"); return; }
+  catch(e){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
   if(!isFinite(v.duration)){
     await new Promise(res=>{ v.currentTime=1e7; v.ondurationchange=()=>{ if(isFinite(v.duration)){ v.ondurationchange=null; v.currentTime=0; res(); } }; });
   }
   const duration=v.duration;
+  $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`;
 
-  /* audio 0→22% */
+  /* audio 0→22% — full decode only when it safely fits in memory */
   let audioRMS=null, onsets=null; const HOP=.05;
   try{
-    if(file.size>220*1048576) throw new Error("too large");
+    if(file.size>220*1048576) throw new Error("file too large for audio decode");
+    if(duration>40*60) throw new Error("too long for audio decode");
     const buf=await file.arrayBuffer(); ringProgress(8,0);
     const actx=new (window.OfflineAudioContext||window.webkitOfflineAudioContext)(1,44100,44100);
     const dec=await actx.decodeAudioData(buf); ringProgress(16,0);
@@ -1961,43 +1972,123 @@ async function analyze(file){
     for(let i=4;i<nH;i++){ const loc=(audioRMS[i-1]+audioRMS[i-2]+audioRMS[i-3]+audioRMS[i-4])/4;
       if(audioRMS[i]>Math.max(.015,loc*2.2)) onsets.push(i*HOP); }
     $("ps0-t").textContent=`Audio decoded — ${onsets.length} strike-like onsets`;
-  }catch(e){ $("ps0-t").textContent="No usable audio — motion-only mode"; }
+  }catch(e){ $("ps0-t").textContent = duration>40*60 ? "Long film — motion-first scan (audio skipped to save memory)" : "No usable audio — motion-only mode"; }
   ringProgress(22,1);
 
-  /* motion 22→86% */
-  const step=clamp(duration/900,.15,1);
-  const grid=[]; for(let t=0;t<duration;t+=step) grid.push(t);
+  /* ============ motion 22→86% ============
+     Short footage (<12 min): one uniform fine pass.
+     Long footage: PASS A coarse sweep over the whole film finds active
+     regions, PASS B re-scans ONLY those regions at fine resolution.
+     Dead time — most of a real match — never gets the expensive scan. */
   const W=96,H=54, cv2=document.createElement("canvas"); cv2.width=W; cv2.height=H;
   const cx=cv2.getContext("2d",{willReadFrequently:true});
-  const motion=new Float32Array(grid.length), motionX=new Float32Array(grid.length).fill(.5); let prev=null;
-  for(let i=0;i<grid.length;i++){
-    if(analysisCancelled) return;
-    await new Promise(r=>{ v.onseeked=r; v.currentTime=Math.min(grid[i],duration-.05); });
+  let prev=null;
+  const grabAt=async(t,fast)=>{
+    await new Promise(r=>{ v.onseeked=r; if(fast&&v.fastSeek) v.fastSeek(Math.min(t,duration-.05)); else v.currentTime=Math.min(t,duration-.05); });
     cx.drawImage(v,0,0,W,H);
     const d=cx.getImageData(0,0,W,H).data, luma=new Float32Array(W*H);
     for(let p=0;p<W*H;p++) luma[p]=d[p*4]*.299+d[p*4+1]*.587+d[p*4+2]*.114;
-    if(prev){ let m=0, mx=0; for(let p=0;p<W*H;p++){ if(Math.abs(luma[p]-prev[p])>14){ m++; mx+=(p%W); } } motion[i]=m/(W*H); motionX[i]=m? (mx/m)/(W-1) : .5; }
+    let m=0,mx=0;
+    if(prev){ for(let p=0;p<W*H;p++){ if(Math.abs(luma[p]-prev[p])>14){ m++; mx+=(p%W); } } }
+    const out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
     prev=luma;
-    if(i%4===0||i===grid.length-1) ringProgress(22+((i+1)/grid.length)*64, 1);
+    return out;
+  };
+  const etaTxt=(done,total,t0)=>{
+    const el=$("ps1-t"); if(!el||done<8) return;
+    const rate=(performance.now()-t0)/done, left=Math.round((total-done)*rate/1000);
+    el.textContent=`Scanning frames for motion · ~${left>=90?Math.round(left/60)+"m":left+"s"} left`;
+  };
+
+  const longFilm = duration > (window.RR_LONG_THRESHOLD || 12*60);
+  let grid=[], motion=[], motionX=[];
+
+  if(!longFilm){
+    /* uniform fine pass (original path) */
+    const step=clamp(duration/900,.15,1);
+    for(let t=0;t<duration;t+=step) grid.push(t);
+    const t0=performance.now();
+    for(let i=0;i<grid.length;i++){
+      if(analysisCancelled){ keepAwake(false); return; }
+      const r=await grabAt(grid[i],false);
+      motion.push(r.m); motionX.push(r.x);
+      if(i%4===0||i===grid.length-1){ ringProgress(22+((i+1)/grid.length)*64, 1); etaTxt(i+1,grid.length,t0); }
+    }
+  } else {
+    /* PASS A — coarse sweep, fast keyframe seeks, whole film */
+    const stepA=clamp(duration/600,2,6);
+    const gA=[]; for(let t=0;t<duration;t+=stepA) gA.push(t);
+    const mA=[]; const t0=performance.now();
+    $("ps1-t").textContent="Pass 1/2 — sweeping the whole film…";
+    for(let i=0;i<gA.length;i++){
+      if(analysisCancelled){ keepAwake(false); return; }
+      const r=await grabAt(gA[i],true);
+      mA.push(r.m);
+      if(i%6===0||i===gA.length-1){ ringProgress(22+((i+1)/gA.length)*26, 1); etaTxt(i+1,gA.length,t0); }
+    }
+    /* find candidate active regions from the coarse signal */
+    const sorted=[...mA].sort((a,b)=>a-b), hiN=sorted[Math.floor(sorted.length*.97)]||1;
+    const nA=mA.map(x=>clamp(x/hiN,0,1));
+    const meanA=nA.reduce((a,b)=>a+b,0)/nA.length;
+    const sdA=Math.sqrt(nA.reduce((a,b)=>a+(b-meanA)**2,0)/nA.length);
+    const thr=meanA+.25*sdA;
+    let regions=[]; let cur=null;
+    for(let i=0;i<gA.length;i++){
+      if(nA[i]>thr){ if(!cur) cur={s:Math.max(0,gA[i]-stepA*1.5)}; cur.e=Math.min(duration,gA[i]+stepA*1.5); }
+      else if(cur && gA[i]-cur.e>10){ regions.push(cur); cur=null; }
+    }
+    if(cur) regions.push(cur);
+    regions=regions.filter(r=>r.e-r.s>=2);
+    const activeDur=regions.reduce((a,r)=>a+(r.e-r.s),0);
+    if(!regions.length || activeDur>duration*.8){ regions=[{s:0,e:duration}]; }
+    /* PASS B — fine scan inside regions only */
+    const fineBudget=1400;
+    const dB=clamp(regions.reduce((a,r)=>a+(r.e-r.s),0)/fineBudget, .3, 1.2);
+    const fine=[]; regions.forEach((r,ri)=>{ for(let t=r.s;t<r.e;t+=dB) fine.push({t,ri}); });
+    $("ps1-t").textContent=`Pass 2/2 — refining ${regions.length} active region${regions.length!==1?"s":""}…`;
+    const t1=performance.now(); let lastRi=-1;
+    const fm=[], fx=[];
+    for(let i=0;i<fine.length;i++){
+      if(analysisCancelled){ keepAwake(false); return; }
+      if(fine[i].ri!==lastRi){ prev=null; lastRi=fine[i].ri; }   // no cross-region frame diffs
+      const r=await grabAt(fine[i].t,false);
+      fm.push(r.m); fx.push(r.x);
+      if(i%5===0||i===fine.length-1){ ringProgress(48+((i+1)/fine.length)*38, 1); etaTxt(i+1,fine.length,t1); }
+    }
+    /* merge: fine samples in regions + coarse samples (dead time) elsewhere */
+    const inRegion=t=>regions.some(r=>t>=r.s&&t<r.e);
+    const merged=[];
+    fine.forEach((f,i)=>merged.push({t:f.t, m:fm[i], x:fx[i]}));
+    gA.forEach((t,i)=>{ if(!inRegion(t)) merged.push({t, m:mA[i]*.6, x:.5}); });
+    merged.sort((a,b)=>a.t-b.t);
+    grid=merged.map(o=>o.t); motion=merged.map(o=>o.m); motionX=merged.map(o=>o.x);
   }
   ringProgress(88,2);
+  $("ps1-t").textContent="Scanning frames for motion";
 
-  /* combine + segment 88→94% */
+  /* combine + segment 88→94% (variable-rate grid aware) */
+  const dtAt=i=> i<grid.length-1 ? grid[i+1]-grid[i] : (i>0? grid[i]-grid[i-1] : .5);
   const audioOnGrid=new Float32Array(grid.length);
   if(audioRMS) for(let i=0;i<grid.length;i++){
-    const h0=Math.floor(grid[i]/HOP), h1=Math.min(audioRMS.length,Math.floor((grid[i]+step)/HOP));
+    const h0=Math.floor(grid[i]/HOP), h1=Math.min(audioRMS.length,Math.floor((grid[i]+dtAt(i))/HOP));
     let m=0; for(let h=h0;h<h1;h++) m=Math.max(m,audioRMS[h]); audioOnGrid[i]=m;
   }
   const norm=a=>{ const s=[...a].sort((x,y)=>x-y), hi=s[Math.floor(s.length*.97)]||1; return a.map(x=>clamp(x/(hi||1),0,1)); };
   const nm=norm([...motion]), na=norm([...audioOnGrid]);
   const wA=audioRMS?.35:0;
   const act=nm.map((m,i)=>(1-wA)*m+wA*na[i]);
-  const win=Math.max(1,Math.round(1/step));
-  const smooth=act.map((_,i)=>{ let s=0,n=0; for(let j=Math.max(0,i-win);j<=Math.min(act.length-1,i+win);j++){s+=act[j];n++;} return s/n; });
+  /* smoothing over a ±1s TIME window (grid may be non-uniform) */
+  const smooth=act.map((_,i)=>{
+    let s=0,n=0;
+    for(let j=i;j>=0 && grid[i]-grid[j]<=1;j--){ s+=act[j]; n++; }
+    for(let j=i+1;j<act.length && grid[j]-grid[i]<=1;j++){ s+=act[j]; n++; }
+    return s/n;
+  });
   const mean=smooth.reduce((a,b)=>a+b,0)/smooth.length;
   const sd=Math.sqrt(smooth.reduce((a,b)=>a+(b-mean)**2,0)/smooth.length);
+  const step=grid.length>1 ? duration/grid.length : .5;   // mean dt, legacy consumers
 
-  if(analysisCancelled) return;
+  if(analysisCancelled){ keepAwake(false); return; }
   analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,hasAudio:!!audioRMS,
              vw:v.videoWidth, vh:v.videoHeight, srcAR:(v.videoWidth&&v.videoHeight)?v.videoWidth/v.videoHeight:16/9,
              videoEl:v, sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
@@ -2006,11 +2097,12 @@ async function analyze(file){
 
   /* thumbnails 94→100% */
   for(let i=0;i<analysis.segs.length;i++){
-    if(analysisCancelled) return;
+    if(analysisCancelled){ keepAwake(false); return; }
     await regrabThumb(analysis.segs[i]);
     ringProgress(94+((i+1)/analysis.segs.length)*6, 3);
   }
   ringProgress(100,4);
+  keepAwake(false);
 
   if(analysisCancelled) return;
   keeps=analysis.segs.map(()=>true);
@@ -2020,13 +2112,19 @@ async function analyze(file){
 /* ---------- segmentation (re-runnable for sensitivity changes) ---------- */
 const SENS={ more:{hi:.32,lo:.06}, balanced:{hi:.55,lo:.1}, fewer:{hi:.8,lo:.15} };
 
+function idxAt(t){
+  const g=analysis.grid; let lo=0, hi=g.length-1;
+  while(lo<hi){ const m=(lo+hi)>>1; if(g[m]<t) lo=m+1; else hi=m; }
+  return lo;
+}
 function computeSegments(hiMul, loMul){
-  const {smooth,grid,duration,step,mean,sd}=analysis;
+  const {smooth,grid,duration,mean,sd}=analysis;
   const hiT=mean+hiMul*sd, loT=mean+loMul*sd;
   const raw=[]; let cur=null, below=0;
   for(let i=0;i<smooth.length;i++){
+    const dt=i?Math.min(grid[i]-grid[i-1],6):0;   // cap so coarse dead-time gaps don't overshoot
     if(!cur && smooth[i]>hiT){ cur={s:grid[i]}; below=0; }
-    else if(cur){ if(smooth[i]<loT){ below+=step; if(below>1.6){ cur.e=grid[i]-below; raw.push(cur); cur=null; } } else below=0; }
+    else if(cur){ if(smooth[i]<loT){ below+=dt; if(below>1.6){ cur.e=grid[i]-below; raw.push(cur); cur=null; } } else below=0; }
   }
   if(cur){ cur.e=duration; raw.push(cur); }
   const merged=[];
@@ -2034,11 +2132,11 @@ function computeSegments(hiMul, loMul){
   const segs=merged.filter(s=>s.e-s.s>=2.5).map(s=>({start:Math.max(0,s.s-.8), end:Math.min(duration,s.e+.8)}));
   segs.forEach(rescoreSeg);
   segs.sort((a,b)=>b.score-a.score);
-  return segs;
+  return segs.slice(0,40);   // sanity cap for very long films
 }
 function rescoreSeg(s){
-  const {smooth,step,mean,sd,onsets,motionX}=analysis;
-  const i0=Math.floor(s.start/step), i1=Math.min(smooth.length-1,Math.floor(s.end/step));
+  const {smooth,mean,sd,onsets,motionX}=analysis;
+  const i0=idxAt(s.start), i1=Math.min(smooth.length-1, idxAt(s.end));
   let sum=0,n=0, xsum=0, wsum=0;
   for(let i=i0;i<=i1;i++){
     if(smooth[i]!==undefined){ sum+=smooth[i]; n++; }
