@@ -360,6 +360,8 @@
   .ed-in:focus{outline:none; border-color:var(--accent);}
   select.ed-in{appearance:none; -webkit-appearance:none;}
   .ed-row{display:flex; gap:12px;}
+  .auth-err{color:var(--danger); font-size:12.5px; min-height:16px; margin-top:8px; line-height:1.4;}
+  .auth-note{font-size:11px; color:var(--muted); line-height:1.5; margin-top:14px; text-align:center;}
 
   /* search */
   .search-bar{display:flex; gap:9px; padding:0 16px 12px; position:sticky; top:0; background:var(--bg); z-index:2;}
@@ -601,8 +603,8 @@
         <h2 class="page-title">Settings</h2>
         <div class="panel-card set-group">
           <div class="pc-head"><span>Account</span></div>
-          <div class="set-row" onclick="toast('Accounts & sync are the next build 🔜')"><span class="set-ic">👤</span><b>Sign in / create account</b><span class="set-badge">Soon</span></div>
-          <div class="set-row" onclick="toast('Westside Tennis Club 🏟️')"><span class="set-ic">🏟️</span><b>My clubs</b><span class="set-badge">1</span></div>
+          <div class="set-row" id="acct-row" onclick="acctRowClick()"><span class="set-ic">👤</span><b id="acct-label">Sign in / create account</b><span class="set-badge" id="acct-badge">Guest</span></div>
+          <div class="set-row" onclick="openEditProfile()"><span class="set-ic">✏️</span><b>Edit profile</b><span class="mh-arrow">›</span></div>
         </div>
         <div class="panel-card set-group">
           <div class="pc-head"><span>Video & AI</span></div>
@@ -703,7 +705,29 @@
         <label class="ed-l">Bio</label>
         <input class="ed-in" id="ed-bio" maxlength="60" placeholder="One line about your game">
         <button class="btn" id="ed-save" style="margin-top:18px;" onclick="saveProfile()">Save</button>
+        <button class="btn ghost sm" id="ed-account" style="margin-top:10px; display:none;" onclick="closeEditor();openAuth('signup')">🔐 &nbsp;Create a real account instead</button>
         <button class="btn ghost sm" id="ed-cancel" style="margin-top:10px;" onclick="closeEditor()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- ============ AUTH (real accounts) ============ -->
+    <div class="editor" id="auth">
+      <div class="editor-card">
+        <h2 id="auth-title">Sign in</h2>
+        <p class="sub" id="auth-sub">Welcome back to RallyReel.</p>
+        <div id="auth-signup-fields" style="display:none">
+          <label class="ed-l">Display name</label>
+          <input class="ed-in" id="auth-name" maxlength="24" placeholder="Your name">
+        </div>
+        <label class="ed-l">Email</label>
+        <input class="ed-in" id="auth-email" type="email" autocomplete="email" placeholder="you@email.com">
+        <label class="ed-l">Password</label>
+        <input class="ed-in" id="auth-pass" type="password" autocomplete="current-password" placeholder="••••••••" onkeydown="if(event.key==='Enter')submitAuth()">
+        <div class="auth-err" id="auth-err"></div>
+        <button class="btn" id="auth-submit" style="margin-top:16px;" onclick="submitAuth()">Sign in</button>
+        <button class="btn ghost sm" id="auth-toggle" style="margin-top:10px;" onclick="toggleAuthMode()">New here? Create an account</button>
+        <button class="btn ghost sm" style="margin-top:8px;" onclick="closeAuth()">Cancel</button>
+        <p class="auth-note" id="auth-note">🔒 Passwords are secured by Supabase — never stored in the app. Your profile syncs across devices; clips stay on this device for now.</p>
       </div>
     </div>
 
@@ -711,8 +735,14 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 "use strict";
+/* ---------- Supabase (real accounts) ---------- */
+const SUPABASE_URL="https://tfrwofxsqxbfnfjefxsd.supabase.co";
+const SUPABASE_KEY="sb_publishable_qTXigJwNsGZL2PfT_seY1g_LTV9kP9v";
+const sb = (window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+let authUser=null;
 /* ============================================================
    RallyReel v1 — prototype UI + real AI pipeline
    ============================================================ */
@@ -1039,6 +1069,7 @@ function openEditor(mode){
   editColor=m.color;
   $("ed-colors").innerHTML=AVATAR_PALETTE.map(c=>`<div class="ed-sw${c===editColor?" on":""}" style="background:${c}" onclick="pickColor('${c}')"></div>`).join("");
   $("ed-cancel").style.display=onboard?"none":"block";
+  const acctBtn=$("ed-account"); if(acctBtn) acctBtn.style.display=(onboard && sb)?"flex":"none";
   syncEdAva();
   $("editor").classList.add("show");
   $("ed-name").oninput=syncEdAva;
@@ -1060,7 +1091,83 @@ function saveProfile(){
     color:editColor, onboarded:true
   });
   closeEditor(); renderMe(); buildFeed(); renderProfile(); saveState();
+  if(authUser && sb){ sb.auth.updateUser({data:{name:store.me.name,handle:store.me.handle,rating:store.me.rating,club:store.me.club,bio:store.me.bio,color:store.me.color}}).catch(()=>{}); }
   toast("Profile saved 🎾");
+}
+
+/* ============================================================
+   ACCOUNTS — real email/password auth via Supabase
+   ============================================================ */
+let authMode="signin";
+function acctRowClick(){ if(authUser) signOut(); else openAuth("signin"); }
+function renderAccountUI(){
+  const lbl=$("acct-label"), badge=$("acct-badge");
+  if(!lbl) return;
+  if(authUser){ lbl.textContent="Signed in — "+(authUser.email||store.me.handle); badge.textContent="Sign out"; badge.classList.add("on"); }
+  else { lbl.textContent="Sign in / create account"; badge.textContent=sb?"Guest":"Offline"; badge.classList.remove("on"); }
+}
+function openAuth(mode){
+  if(!sb){ toast("Sign-in needs a connection — you're offline"); return; }
+  authMode=mode||"signin"; renderAuthMode();
+  $("auth-email").value=""; $("auth-pass").value=""; if($("auth-name")) $("auth-name").value=store.me.name!=="Tanner"?store.me.name:"";
+  $("auth-err").textContent="";
+  $("auth").classList.add("show");
+  setTimeout(()=>$("auth-email").focus(),150);
+}
+function closeAuth(){ $("auth").classList.remove("show"); }
+function toggleAuthMode(){ authMode=authMode==="signin"?"signup":"signin"; renderAuthMode(); }
+function renderAuthMode(){
+  const s=authMode==="signup";
+  $("auth-title").textContent=s?"Create your account":"Sign in";
+  $("auth-sub").textContent=s?"Join RallyReel — your profile syncs across devices.":"Welcome back to RallyReel.";
+  $("auth-signup-fields").style.display=s?"block":"none";
+  $("auth-submit").textContent=s?"Create account":"Sign in";
+  $("auth-toggle").textContent=s?"Have an account? Sign in":"New here? Create an account";
+  $("auth-pass").setAttribute("autocomplete", s?"new-password":"current-password");
+  $("auth-err").textContent="";
+}
+async function submitAuth(){
+  if(!sb){ $("auth-err").textContent="No connection."; return; }
+  const email=$("auth-email").value.trim(), pass=$("auth-pass").value;
+  if(!email||!pass){ $("auth-err").textContent="Email and password are required."; return; }
+  if(authMode==="signup" && pass.length<6){ $("auth-err").textContent="Password must be at least 6 characters."; return; }
+  const btn=$("auth-submit"); btn.disabled=true; btn.textContent="…";
+  try{
+    if(authMode==="signup"){
+      const name=($("auth-name").value.trim())||email.split("@")[0];
+      const meta={ name, handle:"@"+name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,20), rating:store.me.rating||"4.0", club:store.me.club||"Unattached", bio:store.me.bio||"", color:store.me.color||"#ccff00" };
+      const {data,error}=await sb.auth.signUp({email,password:pass,options:{data:meta}});
+      if(error) throw error;
+      if(!data.session){ $("auth-err").textContent="Account created — check your email to confirm, then sign in."; btn.disabled=false; btn.textContent="Create account"; return; }
+      applySession(data.user); toast("Account created 🎾");
+    } else {
+      const {data,error}=await sb.auth.signInWithPassword({email,password:pass});
+      if(error) throw error;
+      applySession(data.user); toast("Signed in 🎾");
+    }
+    closeAuth();
+  }catch(e){ $("auth-err").textContent=(e&&e.message)||"Something went wrong."; }
+  btn.disabled=false; btn.textContent=authMode==="signup"?"Create account":"Sign in";
+}
+function applySession(user){
+  authUser=user; if(!user) return;
+  const m=user.user_metadata||{};
+  Object.assign(store.me,{
+    name:m.name||store.me.name, handle:m.handle||store.me.handle,
+    rating:m.rating||store.me.rating, club:m.club||store.me.club,
+    bio:m.bio!==undefined?m.bio:store.me.bio, color:m.color||store.me.color,
+    onboarded:true, email:user.email
+  });
+  renderMe(); renderAccountUI();
+  if($("view-feed").classList.contains("active")) buildFeed();
+  if($("view-profile").classList.contains("active")) renderProfile();
+  saveState();
+}
+async function signOut(){
+  if(sb) { try{ await sb.auth.signOut(); }catch(e){} }
+  authUser=null; store.me.email=null;
+  renderAccountUI();
+  toast("Signed out — you're browsing as a guest");
 }
 
 /* ============================================================
@@ -1868,13 +1975,21 @@ function renderProfile(){
 }
 
 /* expose + init */
-Object.assign(window,{switchTab,showStep,togglePlay,likePost,openComments,sendComment,openShare,shareTo,closeSheets,previewSeg,setKeep,gotoPost,publishClips,downloadKeepers,dismissWelcome,removeActiveClip,cancelAnalysis,setSensitivity,nudgeSeg,handleDoubleTap,setAutoCrop,toggleFollow,openProfile,openFollowers,openFollowing,closePanel,makeReel,openEditProfile,openEditor,closeEditor,saveProfile,pickColor,openSearch,runSearch,searchTag,openNotifications});
+Object.assign(window,{switchTab,showStep,togglePlay,likePost,openComments,sendComment,openShare,shareTo,closeSheets,previewSeg,setKeep,gotoPost,publishClips,downloadKeepers,dismissWelcome,removeActiveClip,cancelAnalysis,setSensitivity,nudgeSeg,handleDoubleTap,setAutoCrop,toggleFollow,openProfile,openFollowers,openFollowing,closePanel,makeReel,openEditProfile,openEditor,closeEditor,saveProfile,pickColor,openSearch,runSearch,searchTag,openNotifications,openAuth,closeAuth,submitAuth,toggleAuthMode,acctRowClick,signOut});
 (async function init(){
   await loadState();
   document.querySelectorAll("#sw-crop-review,#sw-crop-settings").forEach(sw=>sw&&sw.classList.toggle("on",autoCrop));
-  renderMe(); renderNotifBadge();
+  renderMe(); renderNotifBadge(); renderAccountUI();
   buildFeed(); renderGame(); renderProfile();
-  if(!store.me.onboarded) openEditor("onboard");
+  let hasSession=false;
+  if(sb){
+    try{
+      const {data}=await sb.auth.getSession();
+      if(data && data.session){ applySession(data.session.user); hasSession=true; }
+      sb.auth.onAuthStateChange((_e,session)=>{ if(session&&session.user) applySession(session.user); });
+    }catch(e){}
+  }
+  if(!hasSession && !store.me.onboarded) openEditor("onboard");
 })();
 </script>
 </body>
