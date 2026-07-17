@@ -1954,6 +1954,9 @@ function makeVision(){
     for(let p=0;p<VW*VH;p++){ if(Math.abs(luma[p]-vprev[p])>16){ hot[p]=1; hotN++; } }
     vprev=luma;
     if(hotN>VW*VH*.5){ frames.push({t, cut:true, players:[], ball:null}); return; }
+    /* camera pan/zoom: a large share of the frame moves together — player
+       and ball readings during a pan are unreliable, flag and move on */
+    const pan = hotN>VW*VH*.12;
     /* connected components over the motion mask */
     lbl.fill(0); let nextL=0; const comps=[];
     for(let p=0;p<VW*VH;p++){
@@ -1984,7 +1987,7 @@ function makeVision(){
       })
       .filter(c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.06))
       .sort((a,b)=>b.n-a.n)[0]||null;
-    frames.push({t, players, ball: ballC?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
+    frames.push({t, pan, players, ball: (ballC&&!pan)?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
   }
   return {feed, frames, resetPrev:()=>{vprev=null;}};
 }
@@ -1992,9 +1995,11 @@ function linkFlights(fs){
   const flights=[]; let cur=null;
   const close=c=>{ if(c&&c.pts.length>=3) flights.push(c); };
   for(const f of fs){
-    if(f.cut){ close(cur); cur=null; continue; }
+    if(f.cut||f.pan){ close(cur); cur=null; continue; }
     if(f.ball){
-      if(cur && f.t-cur.end<=0.7 && Math.hypot(f.ball.x-cur.lastX, f.ball.y-cur.lastY)<0.25){
+      const gap=cur?f.t-cur.end:0;
+      /* speed-gated linking: allowed jump grows with the time gap */
+      if(cur && gap<=0.7 && Math.hypot(f.ball.x-cur.lastX, f.ball.y-cur.lastY) < (0.75*gap+0.06)){
         cur.end=f.t; cur.pts.push({t:f.t, x:f.ball.x, y:f.ball.y}); cur.lastX=f.ball.x; cur.lastY=f.ball.y;
       }else{
         close(cur);
@@ -2005,31 +2010,50 @@ function linkFlights(fs){
   close(cur);
   return flights;
 }
+const median=a=>{ if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); return s[s.length>>1]; };
 function pointInsights(s){
   const V=analysis.vision; if(!V) return null;
-  const fs=V.frames.filter(f=>f.t>=s.start-0.5 && f.t<=s.end+0.5);
-  if(fs.length<5) return null;
+  const fsAll=V.frames.filter(f=>f.t>=s.start-0.5 && f.t<=s.end+0.5);
+  if(fsAll.length<5) return null;
+  const fs=fsAll.filter(f=>!f.cut&&!f.pan);         // stable-camera frames only
+  const panFrac=+(1-fs.length/fsAll.length).toFixed(2);
+  if(fs.length<4) return {panHeavy:true, panFrac, present:0, flights:0, ballTime:0, shots:s.onsets, moveNear:null, moveFar:null, endSide:null, servedBy:null, firstBall:null, lastBall:null, topSpeed:null};
   const flights=linkFlights(fs);
-  /* two-player presence: fraction of frames seeing ≥2 moving bodies */
   const present=fs.filter(f=>f.players.length>=2).length/fs.length;
   /* split player observations into near (lower) / far (upper) court */
   const near=[], far=[];
   fs.forEach(f=>f.players.slice(0,2).forEach(p=>{ (p.y>0.5?near:far).push({t:f.t,x:p.x,y:p.y}); }));
-  const dist=tr=>{ let m=0; for(let i=1;i<tr.length;i++){ const d=Math.hypot(tr[i].x-tr[i-1].x, tr[i].y-tr[i-1].y); if(d<.2) m+=d; } return m; };
+  /* SELF-CALIBRATION: the two players bracket the court. Baseline-to-
+     baseline is 23.77m, so their median vertical separation tells us
+     how many meters one screen-unit is worth in this footage. */
+  const spanY=clamp(median(near.map(p=>p.y))-median(far.map(p=>p.y)), 0.2, 0.9);
+  const mY=23.77/spanY;                      // meters per unit-y
+  const mX=mY*0.55;                          // x foreshortening (camera behind baseline)
+  const stepM=(a,b,dt)=>{
+    const d=Math.hypot((a.x-b.x)*mX,(a.y-b.y)*mY);
+    return (dt>0 && dt<=1.2 && d/dt<=6.5) ? d : 0;   // players don't exceed ~6.5 m/s sustained
+  };
+  const dist=tr=>{ let m=0; for(let i=1;i<tr.length;i++) m+=stepM(tr[i],tr[i-1],tr[i].t-tr[i-1].t); return m; };
+  const dur=Math.max(1,s.end-s.start);
+  const capM=v=>Math.min(Math.round(v), Math.round(dur*5));   // sanity ceiling
   const ballTime=+flights.reduce((a,fl)=>a+(fl.end-fl.start),0).toFixed(1);
-  /* direction changes of ball ≈ shots (fallback: audio strikes) */
+  /* calibrated ball speed: fastest inter-sighting velocity in any flight */
+  let topSpeed=null;
+  for(const fl of flights) for(let i=1;i<fl.pts.length;i++){
+    const dt=fl.pts[i].t-fl.pts[i-1].t; if(dt<=0||dt>0.6) continue;
+    const v=Math.hypot((fl.pts[i].x-fl.pts[i-1].x)*mX,(fl.pts[i].y-fl.pts[i-1].y)*mY)/dt*3.6;
+    if(v>=25 && v<=230 && (!topSpeed||v>topSpeed)) topSpeed=Math.round(v);
+  }
   let turns=0;
   for(const fl of flights){ let lastDx=0; for(let i=1;i<fl.pts.length;i++){ const dx=fl.pts[i].y-fl.pts[i-1].y; if(lastDx&&Math.sign(dx)!==Math.sign(lastDx)&&Math.abs(dx)>.02) turns++; if(Math.abs(dx)>.005) lastDx=dx; } }
   const shots = s.onsets!=null ? s.onsets : (turns?turns+1:null);
-  const lastFl=flights[flights.length-1];
-  const endSide=lastFl ? (lastFl.pts[lastFl.pts.length-1].y>0.5?"near":"far") : null;
-  const firstFl=flights[0];
-  let servedBy=null;
-  if(firstFl){ servedBy = firstFl.pts[0].y>0.5?"near":"far"; }
-  return {present:+present.toFixed(2), flights:flights.length, ballTime, shots,
-          moveNear:+(dist(near)*40).toFixed(0), moveFar:+(dist(far)*40).toFixed(0),   // ≈meters, court-scaled
-          endSide, servedBy,
-          firstBall: firstFl?firstFl.start:null, lastBall: lastFl?lastFl.end:null};
+  const lastFl=flights[flights.length-1], firstFl=flights[0];
+  return {present:+present.toFixed(2), panFrac, flights:flights.length, ballTime, shots,
+          moveNear:capM(dist(near)), moveFar:capM(dist(far)),
+          endSide: lastFl?(lastFl.pts[lastFl.pts.length-1].y>0.5?"near":"far"):null,
+          servedBy: firstFl?(firstFl.pts[0].y>0.5?"near":"far"):null,
+          firstBall: firstFl?firstFl.start:null, lastBall: lastFl?lastFl.end:null,
+          topSpeed};
 }
 
 /* ============================================================
@@ -2581,8 +2605,10 @@ function computeSegments(hiMul, loMul){
     for(const s of segs){
       const vi=pointInsights(s);
       if(vi && vi.flights>=1 && vi.firstBall!=null){
-        const ns=Math.max(s.start, vi.firstBall-0.8);
-        const ne=Math.min(s.end, vi.lastBall+1.4);
+        /* only trim when there's real dead time beyond the ball action —
+           never shave a serve that the tracker picked up a beat late */
+        const ns=(vi.firstBall-s.start>3) ? vi.firstBall-1.2 : s.start;
+        const ne=(s.end-vi.lastBall>3) ? vi.lastBall+1.6 : s.end;
         if(ne-ns>=2.5){ s.start=ns; s.end=ne; }
       }
     }
@@ -2611,10 +2637,13 @@ function rescoreSeg(s){
   const cutRate=cutN/dur;
   if(cutRate>.2) sc*=clamp(1-(cutRate-.2)*1.6, .3, 1);
   /* court vision gate: a tennis point has two players on court — segments
-     where the tracker rarely sees two moving bodies aren't points */
+     where the tracker rarely sees two moving bodies aren't points.
+     Pan-heavy footage (broadcast camera swings) is exempt: the tracker is
+     blind during pans, absence of players there proves nothing. */
   if(analysis.vision){
-    const vf=analysis.vision.frames.filter(f=>f.t>=s.start&&f.t<=s.end);
-    if(vf.length>=6){
+    const vfAll=analysis.vision.frames.filter(f=>f.t>=s.start&&f.t<=s.end);
+    const vf=vfAll.filter(f=>!f.cut&&!f.pan);
+    if(vf.length>=6 && vf.length>=vfAll.length*.4){
       const pres=vf.filter(f=>f.players.length>=2).length/vf.length;
       if(pres<.35) sc*=.5;
       else if(pres>.7) sc=Math.min(99, sc*1.06);   // clean two-player point
@@ -2714,7 +2743,7 @@ function renderCandsAndSummary(){
       <div class="cbody">
         <div class="ctitle" id="ctitle${i}">Point ${i+1} — ${fmtT(s.start)} → ${fmtT(s.end)}</div>
         <div class="csub" id="csub${i}">AI: activity ${s.score}/99${s.onsets!==null?` · ${s.onsets} ball-strike onsets`:""}</div>
-        ${s.insights?`<div class="csub" style="color:var(--accent);">🎾 ${s.insights.shots!=null?`≈${s.insights.shots} shots · `:""}${s.insights.flights?`ball tracked ${s.insights.ballTime}s · `:""}${s.insights.servedBy?`${s.insights.servedBy}-side serve · `:""}${s.insights.endSide?`ended ${s.insights.endSide} side · `:""}players moved ${s.insights.moveNear}m + ${s.insights.moveFar}m</div>`:""}
+        ${s.insights?`<div class="csub" style="color:var(--accent);">🎾 ${s.insights.shots!=null?`≈${s.insights.shots} shots · `:""}${s.insights.flights?`ball tracked ${s.insights.ballTime}s · `:""}${s.insights.topSpeed?`~${s.insights.topSpeed} km/h · `:""}${s.insights.servedBy?`${s.insights.servedBy}-side serve · `:""}${s.insights.endSide?`ended ${s.insights.endSide} side`:""}${s.insights.moveNear!=null?` · moved ${s.insights.moveNear}m + ${s.insights.moveFar}m`:""}${s.insights.panHeavy?` · camera moving — limited tracking`:""}</div>`:""}
         <div class="trimrow">
           <span>Start</span>
           <button class="trimbtn" onclick="nudgeSeg(${i},'start',-0.5)" title="Earlier">−</button>
