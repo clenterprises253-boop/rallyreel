@@ -2041,14 +2041,17 @@ async function analyzeWebCodecs(file, duration){
   const cT=[], cM=[], cX=[];
   const rms=[]; let hopAcc=0, hopN=0;
   let hasAudioTrack=false, audioLive=false, audioErr=null, vErr=null;
+  let dur=duration||0, vw=0, vh=0;
   const vdec=new VideoDecoder({
-    output:f=>{ const t=f.timestamp/1e6; const r=lumaDiff(f); f.close(); cT.push(t); cM.push(r.m); cX.push(r.x); },
+    output:f=>{ if(!vw){ vw=f.displayWidth; vh=f.displayHeight; } const t=f.timestamp/1e6; const r=lumaDiff(f); f.close(); cT.push(t); cM.push(r.m); cX.push(r.x); },
     error:e=>{ vErr=e; }
   });
   let adec=null, lastKeyT=-9;
   const p1Ready=(mp4,info)=>{
     const vt=info.videoTracks[0]; if(!vt) throw new Error("no video track");
     const at=info.audioTracks[0]; hasAudioTrack=!!at;
+    if(!dur && info.duration && info.timescale) dur=info.duration/info.timescale;
+    if(!dur && vt.duration && vt.timescale) dur=vt.duration/vt.timescale;
     const cfg={codec:vt.codec, optimizeForLatency:true};
     const desc=mp4Description(mp4,vt.id);
     if(desc && /^(avc|hvc|hev)/.test(vt.codec)) cfg.description=desc;
@@ -2115,12 +2118,17 @@ async function analyzeWebCodecs(file, duration){
 
   /* ---------- regions from the keyframe sweep ---------- */
   const kfGap=Math.max(1.2, cT.length>1 ? (cT[cT.length-1]-cT[0])/cT.length : 2);
-  const regions=activeRegions(cT, cM, duration, kfGap*1.5, 10);
+  if(!dur) dur=cT[cT.length-1]+kfGap;
+  const duration_=dur;
+  const regions=activeRegions(cT, cM, duration_, kfGap*1.5, 10);
 
   /* ---------- PASS 2: fine decode inside active regions only ---------- */
   const totalRegion=regions.reduce((a,r)=>a+(r.e-r.s),0);
   const dB=clamp(totalRegion/1500,.25,1);
   const fT=[], fM=[], fX=[];
+  const thumbs=[]; let lastThumbT=-9;
+  const tcv=document.createElement("canvas"); tcv.width=288; tcv.height=162;
+  const tcx=tcv.getContext("2d");
   let lastKept=-9, lastRegion=-1, v2Err=null;
   const regionAt=t=>{ for(let i=0;i<regions.length;i++) if(t>=regions[i].s&&t<regions[i].e) return i; return -1; };
   prev=null;
@@ -2131,6 +2139,10 @@ async function analyzeWebCodecs(file, duration){
         if(ri!==lastRegion){ prev=null; lastRegion=ri; }
         const r=lumaDiff(f);
         fT.push(t); fM.push(r.m); fX.push(r.x); lastKept=t;
+        /* free thumbnails at decoder speed — no post-pass seeking needed */
+        if(t-lastThumbT>=2.5 && thumbs.length<500){
+          try{ tcx.drawImage(f,0,0,288,162); thumbs.push({t, d:tcv.toDataURL("image/jpeg",.6)}); lastThumbT=t; }catch(e){}
+        }
       }
       f.close();
     },
@@ -2179,7 +2191,8 @@ async function analyzeWebCodecs(file, duration){
   cT.forEach((t,i)=>{ if(!inRegion(t)) merged.push({t, m:cM[i]*.6, x:.5}); });
   merged.sort((a,b)=>a.t-b.t);
   if(merged.length<8) throw new Error("fast engine produced too few samples");
-  return {grid:merged.map(o=>o.t), motion:merged.map(o=>o.m), motionX:merged.map(o=>o.x), audioRMS, onsets, audioNote};
+  return {grid:merged.map(o=>o.t), motion:merged.map(o=>o.m), motionX:merged.map(o=>o.x),
+          audioRMS, onsets, audioNote, duration:duration_, vw, vh, thumbs};
 }
 
 let analysisCancelled=false;
@@ -2202,29 +2215,42 @@ async function analyze(file){
   ringProgress(2,0);
 
   const url=URL.createObjectURL(file);
+  const isMp4=/\.(mp4|mov|m4v)$/i.test(file.name||"") || /mp4|quicktime/i.test(file.type||"");
+  const canFast=!!window.VideoDecoder && isMp4;
   const v=document.createElement("video");
   v.muted=true; v.playsInline=true; v.preload="auto"; v.src=url;
-  try{ await new Promise((res,rej)=>{ v.onloadedmetadata=res; v.onerror=()=>rej(new Error("unreadable video")); }); }
-  catch(e){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
-  if(!isFinite(v.duration)){
-    await new Promise(res=>{ v.currentTime=1e7; v.ondurationchange=()=>{ if(isFinite(v.duration)){ v.ondurationchange=null; v.currentTime=0; res(); } }; });
+  /* metadata load with a timeout — the fast engine doesn't need the media
+     element, so a throttled/background tab must not block analysis */
+  let metaOk=false;
+  try{
+    await Promise.race([
+      new Promise((res,rej)=>{ v.onloadedmetadata=res; v.onerror=()=>rej(new Error("unreadable")); }),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("metadata timeout")), canFast?6000:15000))
+    ]);
+    metaOk=true;
+  }catch(e){
+    if(!canFast){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
   }
-  const duration=v.duration;
-  $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`;
+  if(metaOk && !isFinite(v.duration)){
+    await new Promise(res=>{ const t=setTimeout(res,6000); v.currentTime=1e7; v.ondurationchange=()=>{ if(isFinite(v.duration)){ clearTimeout(t); v.ondurationchange=null; v.currentTime=0; res(); } }; });
+  }
+  let duration=(metaOk && isFinite(v.duration) && v.duration>0) ? v.duration : 0;
+  if(duration) $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`;
 
   /* ---- FAST ENGINE first: WebCodecs + mp4box (MP4/MOV, any length) ---- */
   let audioRMS=null, onsets=null; const HOP=.05;
   let grid=[], motion=[], motionX=[];
   let fast=null;
-  const isMp4=/\.(mp4|mov|m4v)$/i.test(file.name||"") || /mp4|quicktime/i.test(file.type||"");
-  if(window.VideoDecoder && isMp4){
+  if(canFast){
     try{ fast=await analyzeWebCodecs(file, duration); }
     catch(e){ console.warn("Fast engine fell back to classic scan:", e); fast=null; }
   }
   if(analysisCancelled){ keepAwake(false); return; }
+  if(!fast && !duration){ toast("Couldn't read that video file"); keepAwake(false); showStep("u-pick"); return; }
   if(fast){
     grid=fast.grid; motion=fast.motion; motionX=fast.motionX;
     audioRMS=fast.audioRMS; onsets=fast.onsets;
+    if(!duration){ duration=fast.duration; $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`; }
     $("ps0-t").textContent=fast.audioNote;
     $("ps1-t").textContent=`Fast engine — ${grid.length} frames analyzed at decoder speed`;
     ringProgress(88,2);
@@ -2352,9 +2378,11 @@ async function analyze(file){
   const step=grid.length>1 ? duration/grid.length : .5;   // mean dt, legacy consumers
 
   if(analysisCancelled){ keepAwake(false); return; }
+  const aw=v.videoWidth||(fast&&fast.vw)||0, ah=v.videoHeight||(fast&&fast.vh)||0;
   analysis={url,file,duration,grid,step,motion:nm,motionX,audio:na,smooth,mean,sd,onsets,hasAudio:!!audioRMS,
-             vw:v.videoWidth, vh:v.videoHeight, srcAR:(v.videoWidth&&v.videoHeight)?v.videoWidth/v.videoHeight:16/9,
-             videoEl:v, sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
+             vw:aw, vh:ah, srcAR:(aw&&ah)?aw/ah:16/9,
+             videoEl:v, thumbCache:(fast&&fast.thumbs&&fast.thumbs.length)?fast.thumbs:null,
+             sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
   analysis.segs=computeSegments(SENS.balanced.hi, SENS.balanced.lo);
   ringProgress(94,3);
 
@@ -2412,12 +2440,26 @@ function rescoreSeg(s){
   s.cropX=wsum>0 ? clamp(xsum/wsum,0,1) : .5;
 }
 async function regrabThumb(s){
+  const mid=clamp((s.start+s.end)/2, 0, analysis.duration-.05);
+  /* fast engine cached thumbnails during decode — use the nearest one */
+  const tc=analysis.thumbCache;
+  if(tc && tc.length){
+    let best=null, bd=1e9;
+    for(const th of tc){ const d=Math.abs(th.t-mid); if(d<bd){ bd=d; best=th; } }
+    if(best && bd<=4){ s.thumb=best.d; return; }
+  }
+  /* classic: seek the media element, with a timeout so a throttled tab can't hang */
   const v=analysis.videoEl;
   const tcv=document.createElement("canvas"); tcv.width=320; tcv.height=180;
   const tcx=tcv.getContext("2d");
-  await new Promise(r=>{ v.onseeked=r; v.currentTime=clamp((s.start+s.end)/2, 0, analysis.duration-.05); });
-  tcx.drawImage(v,0,0,320,180);
-  s.thumb=tcv.toDataURL("image/jpeg",.72);
+  try{
+    await Promise.race([
+      new Promise(r=>{ v.onseeked=r; v.currentTime=mid; }),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("seek timeout")),4000))
+    ]);
+    tcx.drawImage(v,0,0,320,180);
+    s.thumb=tcv.toDataURL("image/jpeg",.72);
+  }catch(e){ if(!s.thumb) s.thumb="data:image/svg+xml,"+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%231a2330"/><text x="160" y="95" fill="%238fa0b3" font-size="14" text-anchor="middle" font-family="sans-serif">🎾 clip</text></svg>'); }
 }
 async function setSensitivity(level){
   if(!analysis || analysis.sensitivity===level) return;
