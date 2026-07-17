@@ -493,7 +493,7 @@
           <div class="dropzone" id="dz">
             <div class="big">🎾</div>
             <b>Drop match footage or tap to browse</b>
-            <span class="sub">MP4 / MOV / WebM · full matches supported — 90 min+ footage welcome</span>
+            <span class="sub">MP4 / MOV / WebM · full matches (90 min+) · up to 20 auto-cut clips per upload</span>
             <input type="file" id="file" accept="video/*" style="display:none">
           </div>
           <button class="btn ghost sm" id="btn-demo">⚗️ No footage? Generate a demo match (~40 s)</button>
@@ -2001,7 +2001,7 @@ async function mp4StreamFile(file, onReady, onSamples, onProgress){
   mp4.onError=e=>{ err=new Error("demux: "+e); };
   mp4.onReady=info=>{ readyRan=true; pend.push(Promise.resolve(onReady(mp4,info)).catch(e=>{err=err||e;})); };
   mp4.onSamples=(id,user,samples)=>{ pend.push(Promise.resolve(onSamples(mp4,id,user,samples)).catch(e=>{err=err||e;})); };
-  const CHUNK=6*1048576;
+  const CHUNK=16*1048576;
   for(let off=0; off<file.size; off+=CHUNK){
     if(analysisCancelled) throw new Error("cancelled");
     if(err) throw err;
@@ -2092,12 +2092,12 @@ async function analyzeWebCodecs(file, duration){
         lastKeyT=t;
         if(vdec.state==="configured") vdec.decode(new EncodedVideoChunk({type:"key", timestamp:Math.round(t*1e6), data:s.data}));
       }
-      while(vdec.decodeQueueSize>24) await sleep(4);
+      while(vdec.decodeQueueSize>48) await sleep(2);
     } else if(user==="a" && adec && adec.state==="configured" && !audioErr){
       for(const s of samples){
         adec.decode(new EncodedAudioChunk({type:"key", timestamp:Math.round(s.cts/s.timescale*1e6), data:s.data}));
       }
-      while(adec.decodeQueueSize>60) await sleep(4);
+      while(adec.decodeQueueSize>120) await sleep(2);
     }
     mp4.releaseUsedSamples(id, samples[samples.length-1].number);
   };
@@ -2124,7 +2124,7 @@ async function analyzeWebCodecs(file, duration){
 
   /* ---------- PASS 2: fine decode inside active regions only ---------- */
   const totalRegion=regions.reduce((a,r)=>a+(r.e-r.s),0);
-  const dB=clamp(totalRegion/1500,.25,1);
+  const dB=clamp(totalRegion/2500,.2,1);
   const fT=[], fM=[], fX=[];
   const thumbs=[]; let lastThumbT=-9;
   const tcv=document.createElement("canvas"); tcv.width=288; tcv.height=162;
@@ -2152,8 +2152,12 @@ async function analyzeWebCodecs(file, duration){
   const flushGop=()=>{
     if(!gop.length) return;
     const gEnd=gop[gop.length-1].t+.5;
-    if(vdec2.state==="configured" && regions.some(r=>gopStart<r.e && gEnd>r.s)){
-      for(const g of gop) vdec2.decode(g.chunk);
+    /* decode only up to the last needed moment — frames past the region's
+       end are never fed, so partial GOPs cost nothing extra */
+    let needEnd=-1;
+    for(const r of regions) if(gopStart<r.e && gEnd>r.s) needEnd=Math.max(needEnd, Math.min(r.e, gEnd));
+    if(needEnd>=0 && vdec2.state==="configured"){
+      for(const g of gop){ if(g.t<=needEnd+1) vdec2.decode(g.chunk); }
     }
     gop=[];
   };
@@ -2173,7 +2177,7 @@ async function analyzeWebCodecs(file, duration){
       if(s.is_sync){ flushGop(); gopStart=t; }
       gop.push({t, chunk:new EncodedVideoChunk({type:s.is_sync?"key":"delta", timestamp:Math.round(t*1e6), data:s.data})});
     }
-    while(vdec2.decodeQueueSize>24) await sleep(4);
+    while(vdec2.decodeQueueSize>48) await sleep(2);
     mp4.releaseUsedSamples(id, samples[samples.length-1].number);
   };
   $("ps1-t").textContent=`Fast engine — pass 2/2: refining ${regions.length} active region${regions.length!==1?"s":""}…`;
@@ -2408,6 +2412,23 @@ function idxAt(t){
   while(lo<hi){ const m=(lo+hi)>>1; if(g[m]<t) lo=m+1; else hi=m; }
   return lo;
 }
+const MAX_CLIPS=20;
+function splitLongSeg(s, maxLen){
+  /* very long rallies / continuous play → split at the weakest interior
+     moment so each clip stays shareable */
+  const out=[], stack=[s];
+  while(stack.length){
+    const g=stack.pop();
+    if(g.end-g.start<=maxLen){ out.push(g); continue; }
+    const i0=idxAt(g.start+(g.end-g.start)*.3), i1=idxAt(g.start+(g.end-g.start)*.7);
+    let mi=i0; for(let i=i0;i<=i1;i++) if(analysis.smooth[i]<analysis.smooth[mi]) mi=i;
+    const cut=analysis.grid[mi];
+    if(cut-g.start<3 || g.end-cut<3){ out.push(g); continue; }
+    stack.push({start:g.start, end:cut});
+    stack.push({start:cut, end:g.end});
+  }
+  return out;
+}
 function computeSegments(hiMul, loMul){
   const {smooth,grid,duration,mean,sd}=analysis;
   const hiT=mean+hiMul*sd, loT=mean+loMul*sd;
@@ -2420,10 +2441,11 @@ function computeSegments(hiMul, loMul){
   if(cur){ cur.e=duration; raw.push(cur); }
   const merged=[];
   for(const s of raw){ if(merged.length && s.s-merged[merged.length-1].e<2) merged[merged.length-1].e=s.e; else merged.push(s); }
-  const segs=merged.filter(s=>s.e-s.s>=2.5).map(s=>({start:Math.max(0,s.s-.8), end:Math.min(duration,s.e+.8)}));
+  let segs=merged.filter(s=>s.e-s.s>=2.5).map(s=>({start:Math.max(0,s.s-.8), end:Math.min(duration,s.e+.8)}));
+  segs=segs.flatMap(s=> s.end-s.start>40 ? splitLongSeg(s,32) : [s]);
   segs.forEach(rescoreSeg);
   segs.sort((a,b)=>b.score-a.score);
-  return segs.slice(0,40);   // sanity cap for very long films
+  return segs.slice(0,MAX_CLIPS);   // up to 20 clips per upload
 }
 function rescoreSeg(s){
   const {smooth,mean,sd,onsets,motionX}=analysis;
