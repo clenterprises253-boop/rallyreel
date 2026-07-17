@@ -1926,6 +1926,262 @@ function ringProgress(p, stage){
   });
 }
 
+/* ============================================================
+   SHARED ANALYSIS HELPERS
+   ============================================================ */
+function computeOnsets(audioRMS,HOP){
+  const onsets=[];
+  for(let i=4;i<audioRMS.length;i++){
+    const loc=(audioRMS[i-1]+audioRMS[i-2]+audioRMS[i-3]+audioRMS[i-4])/4;
+    if(audioRMS[i]>Math.max(.015,loc*2.2)) onsets.push(i*HOP);
+  }
+  return onsets;
+}
+function activeRegions(times, vals, duration, pad, mergeGap){
+  const sorted=[...vals].sort((a,b)=>a-b), hiN=sorted[Math.floor(sorted.length*.97)]||1;
+  const nA=vals.map(x=>clamp(x/hiN,0,1));
+  const meanA=nA.reduce((a,b)=>a+b,0)/nA.length;
+  const sdA=Math.sqrt(nA.reduce((a,b)=>a+(b-meanA)**2,0)/nA.length);
+  const thr=meanA+.25*sdA;
+  let regions=[]; let cur=null;
+  for(let i=0;i<times.length;i++){
+    if(nA[i]>thr){ if(!cur) cur={s:Math.max(0,times[i]-pad)}; cur.e=Math.min(duration,times[i]+pad); }
+    else if(cur && times[i]-cur.e>mergeGap){ regions.push(cur); cur=null; }
+  }
+  if(cur) regions.push(cur);
+  regions=regions.filter(r=>r.e-r.s>=2);
+  const activeDur=regions.reduce((a,r)=>a+(r.e-r.s),0);
+  if(!regions.length || activeDur>duration*.8) regions=[{s:0,e:duration}];
+  return regions;
+}
+
+/* ============================================================
+   FAST ENGINE — WebCodecs + mp4box streaming demux (MP4/MOV).
+   Pass 1 decodes ONLY keyframes across the whole film (coarse
+   activity map) while streaming the audio track for ball-strike
+   onsets. Pass 2 decodes just the GOPs inside active regions for
+   fine cut points. The file is read in slices, so memory stays
+   flat no matter how long the footage is. Any failure anywhere
+   falls back to the classic seek-based scanner.
+   ============================================================ */
+function loadMp4box(){
+  if(window.MP4Box) return Promise.resolve(true);
+  return new Promise(res=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js";
+    s.onload=()=>res(!!window.MP4Box); s.onerror=()=>res(false);
+    document.head.appendChild(s);
+  });
+}
+function mp4Description(mp4file, trackId){
+  try{
+    const trak=mp4file.getTrackById(trackId);
+    for(const entry of trak.mdia.minf.stbl.stsd.entries){
+      const box=entry.avcC||entry.hvcC;
+      if(box){
+        const ds=new DataStream(undefined,0,DataStream.BIG_ENDIAN);
+        box.write(ds);
+        return new Uint8Array(ds.buffer,8);   // strip box header
+      }
+    }
+  }catch(e){}
+  return undefined;
+}
+function mp4AudioSpecific(mp4file, trackId){
+  try{
+    const trak=mp4file.getTrackById(trackId);
+    const esds=trak.mdia.minf.stbl.stsd.entries[0].esds;
+    return esds ? new Uint8Array(esds.esd.descs[0].descs[0].data) : undefined;
+  }catch(e){ return undefined; }
+}
+async function mp4StreamFile(file, onReady, onSamples, onProgress){
+  const mp4=MP4Box.createFile();
+  let err=null, readyRan=false;
+  const pend=[];
+  mp4.onError=e=>{ err=new Error("demux: "+e); };
+  mp4.onReady=info=>{ readyRan=true; pend.push(Promise.resolve(onReady(mp4,info)).catch(e=>{err=err||e;})); };
+  mp4.onSamples=(id,user,samples)=>{ pend.push(Promise.resolve(onSamples(mp4,id,user,samples)).catch(e=>{err=err||e;})); };
+  const CHUNK=6*1048576;
+  for(let off=0; off<file.size; off+=CHUNK){
+    if(analysisCancelled) throw new Error("cancelled");
+    if(err) throw err;
+    const ab=await file.slice(off,off+CHUNK).arrayBuffer();
+    ab.fileStart=off;
+    mp4.appendBuffer(ab);
+    while(pend.length) await pend.shift();
+    if(err) throw err;
+    if(onProgress) onProgress(Math.min(1,(off+CHUNK)/file.size));
+    await new Promise(r=>setTimeout(r,0));
+  }
+  try{ mp4.flush(); }catch(e){}
+  while(pend.length) await pend.shift();
+  if(err) throw err;
+  if(!readyRan) throw new Error("could not parse container");
+}
+async function analyzeWebCodecs(file, duration){
+  if(!window.VideoDecoder || !window.EncodedVideoChunk) throw new Error("WebCodecs unavailable");
+  if(!await loadMp4box()) throw new Error("mp4box unavailable");
+  const W=96,H=54;
+  const cv=document.createElement("canvas"); cv.width=W; cv.height=H;
+  const cx=cv.getContext("2d",{willReadFrequently:true});
+  let prev=null;
+  const lumaDiff=f=>{
+    cx.drawImage(f,0,0,W,H);
+    const d=cx.getImageData(0,0,W,H).data, luma=new Float32Array(W*H);
+    for(let p=0;p<W*H;p++) luma[p]=d[p*4]*.299+d[p*4+1]*.587+d[p*4+2]*.114;
+    let m=0,mx=0;
+    if(prev){ for(let p=0;p<W*H;p++){ if(Math.abs(luma[p]-prev[p])>14){ m++; mx+=(p%W); } } }
+    const out=prev?{m:m/(W*H), x:m?(mx/m)/(W-1):.5}:{m:0,x:.5};
+    prev=luma; return out;
+  };
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+  /* ---------- PASS 1: keyframe sweep + streaming audio ---------- */
+  $("ps0-t").textContent="Fast engine — streaming decode (WebCodecs)";
+  const cT=[], cM=[], cX=[];
+  const rms=[]; let hopAcc=0, hopN=0;
+  let hasAudioTrack=false, audioLive=false, audioErr=null, vErr=null;
+  const vdec=new VideoDecoder({
+    output:f=>{ const t=f.timestamp/1e6; const r=lumaDiff(f); f.close(); cT.push(t); cM.push(r.m); cX.push(r.x); },
+    error:e=>{ vErr=e; }
+  });
+  let adec=null, lastKeyT=-9;
+  const p1Ready=(mp4,info)=>{
+    const vt=info.videoTracks[0]; if(!vt) throw new Error("no video track");
+    const at=info.audioTracks[0]; hasAudioTrack=!!at;
+    const cfg={codec:vt.codec, optimizeForLatency:true};
+    const desc=mp4Description(mp4,vt.id);
+    if(desc && /^(avc|hvc|hev)/.test(vt.codec)) cfg.description=desc;
+    vdec.configure(cfg);
+    mp4.setExtractionOptions(vt.id,"v",{nbSamples:400});
+    if(at && window.AudioDecoder){
+      try{
+        let acodec=(at.codec||"").toLowerCase();
+        if(acodec.startsWith("opus")) acodec="opus";
+        const acfg={codec:acodec, sampleRate:at.audio.sample_rate, numberOfChannels:at.audio.channel_count};
+        if(acodec.startsWith("mp4a")){ const d=mp4AudioSpecific(mp4,at.id); if(d) acfg.description=d; }
+        adec=new AudioDecoder({
+          output:ad=>{
+            try{
+              const n=ad.numberOfFrames, buf=new Float32Array(n);
+              ad.copyTo(buf,{planeIndex:0, format:"f32-planar"});
+              const hopLen=Math.round(ad.sampleRate*.05);
+              for(let i=0;i<n;i++){ const s=buf[i]; hopAcc+=s*s; if(++hopN>=hopLen){ rms.push(Math.sqrt(hopAcc/hopN)); hopAcc=0; hopN=0; } }
+            }catch(e){ audioErr=e; }
+            ad.close();
+          },
+          error:e=>{ audioErr=e; }
+        });
+        adec.configure(acfg);
+        mp4.setExtractionOptions(at.id,"a",{nbSamples:800});
+        audioLive=true;
+      }catch(e){ adec=null; audioLive=false; audioErr=e; }
+    }
+    mp4.start();
+  };
+  const p1Samples=async(mp4,id,user,samples)=>{
+    if(!samples.length) return;
+    if(user==="v"){
+      for(const s of samples){
+        if(!s.is_sync) continue;
+        const t=s.cts/s.timescale;
+        if(t-lastKeyT<1.2) continue;              // all-intra / dense-keyframe guard
+        lastKeyT=t;
+        if(vdec.state==="configured") vdec.decode(new EncodedVideoChunk({type:"key", timestamp:Math.round(t*1e6), data:s.data}));
+      }
+      while(vdec.decodeQueueSize>24) await sleep(4);
+    } else if(user==="a" && adec && adec.state==="configured" && !audioErr){
+      for(const s of samples){
+        adec.decode(new EncodedAudioChunk({type:"key", timestamp:Math.round(s.cts/s.timescale*1e6), data:s.data}));
+      }
+      while(adec.decodeQueueSize>60) await sleep(4);
+    }
+    mp4.releaseUsedSamples(id, samples[samples.length-1].number);
+  };
+  $("ps1-t").textContent="Fast engine — pass 1/2: sweeping keyframes…";
+  await mp4StreamFile(file, p1Ready, p1Samples, fr=>ringProgress(4+fr*46, 1));
+  if(vErr) throw vErr;
+  try{ await vdec.flush(); }catch(e){}
+  if(adec && adec.state==="configured"){ try{ await adec.flush(); }catch(e){} }
+  try{ vdec.close(); }catch(e){}
+  if(adec){ try{ adec.close(); }catch(e){} }
+  if(analysisCancelled) throw new Error("cancelled");
+  if(cT.length<4) throw new Error("too few keyframes decoded");
+
+  let audioRMS=null, onsets=null;
+  if(audioLive && !audioErr && rms.length>20){ audioRMS=Float32Array.from(rms); onsets=computeOnsets(audioRMS,.05); }
+  const audioNote = audioRMS ? `Audio streamed — ${onsets.length} strike-like onsets`
+    : hasAudioTrack ? "Audio track skipped — motion-only scoring" : "No audio track — motion scan has it covered ✓";
+
+  /* ---------- regions from the keyframe sweep ---------- */
+  const kfGap=Math.max(1.2, cT.length>1 ? (cT[cT.length-1]-cT[0])/cT.length : 2);
+  const regions=activeRegions(cT, cM, duration, kfGap*1.5, 10);
+
+  /* ---------- PASS 2: fine decode inside active regions only ---------- */
+  const totalRegion=regions.reduce((a,r)=>a+(r.e-r.s),0);
+  const dB=clamp(totalRegion/1500,.25,1);
+  const fT=[], fM=[], fX=[];
+  let lastKept=-9, lastRegion=-1, v2Err=null;
+  const regionAt=t=>{ for(let i=0;i<regions.length;i++) if(t>=regions[i].s&&t<regions[i].e) return i; return -1; };
+  prev=null;
+  const vdec2=new VideoDecoder({
+    output:f=>{
+      const t=f.timestamp/1e6, ri=regionAt(t);
+      if(ri>=0 && t-lastKept>=dB){
+        if(ri!==lastRegion){ prev=null; lastRegion=ri; }
+        const r=lumaDiff(f);
+        fT.push(t); fM.push(r.m); fX.push(r.x); lastKept=t;
+      }
+      f.close();
+    },
+    error:e=>{ v2Err=e; }
+  });
+  let gop=[], gopStart=0;
+  const flushGop=()=>{
+    if(!gop.length) return;
+    const gEnd=gop[gop.length-1].t+.5;
+    if(vdec2.state==="configured" && regions.some(r=>gopStart<r.e && gEnd>r.s)){
+      for(const g of gop) vdec2.decode(g.chunk);
+    }
+    gop=[];
+  };
+  const p2Ready=(mp4,info)=>{
+    const vt=info.videoTracks[0];
+    const cfg={codec:vt.codec, optimizeForLatency:true};
+    const desc=mp4Description(mp4,vt.id);
+    if(desc && /^(avc|hvc|hev)/.test(vt.codec)) cfg.description=desc;
+    vdec2.configure(cfg);
+    mp4.setExtractionOptions(vt.id,"v2",{nbSamples:400});
+    mp4.start();
+  };
+  const p2Samples=async(mp4,id,user,samples)=>{
+    if(user!=="v2" || !samples.length) return;
+    for(const s of samples){
+      const t=s.cts/s.timescale;
+      if(s.is_sync){ flushGop(); gopStart=t; }
+      gop.push({t, chunk:new EncodedVideoChunk({type:s.is_sync?"key":"delta", timestamp:Math.round(t*1e6), data:s.data})});
+    }
+    while(vdec2.decodeQueueSize>24) await sleep(4);
+    mp4.releaseUsedSamples(id, samples[samples.length-1].number);
+  };
+  $("ps1-t").textContent=`Fast engine — pass 2/2: refining ${regions.length} active region${regions.length!==1?"s":""}…`;
+  await mp4StreamFile(file, p2Ready, p2Samples, fr=>ringProgress(50+fr*36, 1));
+  flushGop();
+  if(v2Err) throw v2Err;
+  try{ await vdec2.flush(); }catch(e){}
+  try{ vdec2.close(); }catch(e){}
+  if(analysisCancelled) throw new Error("cancelled");
+
+  /* merge: fine in-region samples + coarse keyframe samples elsewhere */
+  const inRegion=t=>regions.some(r=>t>=r.s&&t<r.e);
+  const merged=[];
+  fT.forEach((t,i)=>merged.push({t, m:fM[i], x:fX[i]}));
+  cT.forEach((t,i)=>{ if(!inRegion(t)) merged.push({t, m:cM[i]*.6, x:.5}); });
+  merged.sort((a,b)=>a.t-b.t);
+  if(merged.length<8) throw new Error("fast engine produced too few samples");
+  return {grid:merged.map(o=>o.t), motion:merged.map(o=>o.m), motionX:merged.map(o=>o.x), audioRMS, onsets, audioNote};
+}
+
 let analysisCancelled=false;
 let wakeLock=null;
 async function keepAwake(on){
@@ -1956,8 +2212,25 @@ async function analyze(file){
   const duration=v.duration;
   $("proc-file").textContent=`${file.name} · ${(file.size/1048576).toFixed(1)} MB · ${mins(duration/60)} of footage`;
 
-  /* audio 0→22% — full decode only when it safely fits in memory */
+  /* ---- FAST ENGINE first: WebCodecs + mp4box (MP4/MOV, any length) ---- */
   let audioRMS=null, onsets=null; const HOP=.05;
+  let grid=[], motion=[], motionX=[];
+  let fast=null;
+  const isMp4=/\.(mp4|mov|m4v)$/i.test(file.name||"") || /mp4|quicktime/i.test(file.type||"");
+  if(window.VideoDecoder && isMp4){
+    try{ fast=await analyzeWebCodecs(file, duration); }
+    catch(e){ console.warn("Fast engine fell back to classic scan:", e); fast=null; }
+  }
+  if(analysisCancelled){ keepAwake(false); return; }
+  if(fast){
+    grid=fast.grid; motion=fast.motion; motionX=fast.motionX;
+    audioRMS=fast.audioRMS; onsets=fast.onsets;
+    $("ps0-t").textContent=fast.audioNote;
+    $("ps1-t").textContent=`Fast engine — ${grid.length} frames analyzed at decoder speed`;
+    ringProgress(88,2);
+  } else {
+
+  /* audio 0→22% — classic full decode only when it safely fits in memory */
   try{
     if(file.size>220*1048576) throw new Error("file too large for audio decode");
     if(duration>40*60) throw new Error("too long for audio decode");
@@ -1968,11 +2241,14 @@ async function analyze(file){
     const hopN=Math.floor(sr*HOP), nH=Math.floor(ch.length/hopN);
     audioRMS=new Float32Array(nH);
     for(let i=0;i<nH;i++){ let s=0,o=i*hopN; for(let j=0;j<hopN;j+=4) s+=ch[o+j]*ch[o+j]; audioRMS[i]=Math.sqrt(s/(hopN/4)); }
-    onsets=[];
-    for(let i=4;i<nH;i++){ const loc=(audioRMS[i-1]+audioRMS[i-2]+audioRMS[i-3]+audioRMS[i-4])/4;
-      if(audioRMS[i]>Math.max(.015,loc*2.2)) onsets.push(i*HOP); }
+    onsets=computeOnsets(audioRMS,HOP);
     $("ps0-t").textContent=`Audio decoded — ${onsets.length} strike-like onsets`;
-  }catch(e){ $("ps0-t").textContent = duration>40*60 ? "Long film — motion-first scan (audio skipped to save memory)" : "No usable audio — motion-only mode"; }
+  }catch(e){
+    audioRMS=null; onsets=null;
+    $("ps0-t").textContent = duration>40*60 ? "Long film — audio skipped to save memory (motion covers it)"
+      : file.size>220*1048576 ? "Big file — motion-only scoring (works great)"
+      : "No audio track — motion scan has it covered ✓";
+  }
   ringProgress(22,1);
 
   /* ============ motion 22→86% ============
@@ -2001,7 +2277,6 @@ async function analyze(file){
   };
 
   const longFilm = duration > (window.RR_LONG_THRESHOLD || 12*60);
-  let grid=[], motion=[], motionX=[];
 
   if(!longFilm){
     /* uniform fine pass (original path) */
@@ -2027,20 +2302,7 @@ async function analyze(file){
       if(i%6===0||i===gA.length-1){ ringProgress(22+((i+1)/gA.length)*26, 1); etaTxt(i+1,gA.length,t0); }
     }
     /* find candidate active regions from the coarse signal */
-    const sorted=[...mA].sort((a,b)=>a-b), hiN=sorted[Math.floor(sorted.length*.97)]||1;
-    const nA=mA.map(x=>clamp(x/hiN,0,1));
-    const meanA=nA.reduce((a,b)=>a+b,0)/nA.length;
-    const sdA=Math.sqrt(nA.reduce((a,b)=>a+(b-meanA)**2,0)/nA.length);
-    const thr=meanA+.25*sdA;
-    let regions=[]; let cur=null;
-    for(let i=0;i<gA.length;i++){
-      if(nA[i]>thr){ if(!cur) cur={s:Math.max(0,gA[i]-stepA*1.5)}; cur.e=Math.min(duration,gA[i]+stepA*1.5); }
-      else if(cur && gA[i]-cur.e>10){ regions.push(cur); cur=null; }
-    }
-    if(cur) regions.push(cur);
-    regions=regions.filter(r=>r.e-r.s>=2);
-    const activeDur=regions.reduce((a,r)=>a+(r.e-r.s),0);
-    if(!regions.length || activeDur>duration*.8){ regions=[{s:0,e:duration}]; }
+    const regions=activeRegions(gA, mA, duration, stepA*1.5, 10);
     /* PASS B — fine scan inside regions only */
     const fineBudget=1400;
     const dB=clamp(regions.reduce((a,r)=>a+(r.e-r.s),0)/fineBudget, .3, 1.2);
@@ -2065,6 +2327,7 @@ async function analyze(file){
   }
   ringProgress(88,2);
   $("ps1-t").textContent="Scanning frames for motion";
+  }   /* end classic (non-fast) path */
 
   /* combine + segment 88→94% (variable-rate grid aware) */
   const dtAt=i=> i<grid.length-1 ? grid[i+1]-grid[i] : (i>0? grid[i]-grid[i-1] : .5);
