@@ -1944,6 +1944,24 @@ function makeVision(){
   let vprev=null;
   const frames=[];   // {t, cut?, players:[{x,y,a}], ball:{x,y}|null}
   const lbl=new Int32Array(VW*VH), stack=new Int32Array(VW*VH);
+  /* court-line accumulator: a line is bright, thin, and fixed — summing
+     "bright ridge + static" pixels over a whole rally makes the court lines
+     emerge as high-count pixels while players/ball never persist anywhere */
+  const ridgeAcc=new Float32Array(VW*VH); let ridgeN=0;
+  const RG=3, RMARGIN=22, RBRIGHT=105;
+  function accumulateRidges(luma, hot){
+    ridgeN++;
+    for(let y=RG;y<VH-RG;y++) for(let x=RG;x<VW-RG;x++){
+      const p=y*VW+x;
+      if(hot[p] || luma[p]<RBRIGHT) continue;
+      /* a true line is a THIN bright ridge: darker on BOTH sides. Using max()
+         (not min) rejects the edge of a solid bright body (player), where one
+         side stays bright — only genuine thin lines pass. */
+      const hRidge = luma[p]-Math.max(luma[p-RG*VW],luma[p+RG*VW]) > RMARGIN;   // horizontal line
+      const vRidge = luma[p]-Math.max(luma[p-RG],luma[p+RG]) > RMARGIN;         // vertical line
+      if(hRidge||vRidge) ridgeAcc[p]++;
+    }
+  }
   function feed(src, t){
     try{ vcx.drawImage(src,0,0,VW,VH); }catch(e){ return; }
     const d=vcx.getImageData(0,0,VW,VH).data;
@@ -1957,6 +1975,7 @@ function makeVision(){
     /* camera pan/zoom: a large share of the frame moves together — player
        and ball readings during a pan are unreliable, flag and move on */
     const pan = hotN>VW*VH*.12;
+    if(!pan) accumulateRidges(luma, hot);
     /* connected components over the motion mask */
     lbl.fill(0); let nextL=0; const comps=[];
     for(let p=0;p<VW*VH;p++){
@@ -1989,8 +2008,116 @@ function makeVision(){
       .sort((a,b)=>b.n-a.n)[0]||null;
     frames.push({t, pan, players, ball: (ballC&&!pan)?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
   }
-  return {feed, frames, resetPrev:()=>{vprev=null;}};
+  return {feed, frames, resetPrev:()=>{vprev=null;}, VW, VH, ridgeAcc, ridgeCount:()=>ridgeN};
 }
+/* ============================================================
+   COURT DETECTION v1 — fit a homography (image → court metres)
+   from the accumulated court-line mask, so ball/player pixels become
+   real positions: in/out calls, landing spots, true distances.
+   Tennis singles court: 8.23 m wide × 23.77 m long (baseline↔baseline).
+   ============================================================ */
+const COURT_W=8.23, COURT_L=23.77, COURT_NET=COURT_L/2;
+function gaussSolve(A,b){
+  const n=b.length, M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let piv=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[piv][c])) piv=r;
+    if(Math.abs(M[piv][c])<1e-9) return null;
+    [M[c],M[piv]]=[M[piv],M[c]];
+    for(let r=0;r<n;r++){ if(r===c) continue; const f=M[r][c]/M[c][c]; for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k]; }
+  }
+  return M.map((r,i)=>r[n]/r[i]);
+}
+function solveHomography(src, dst){
+  const A=[], b=[];
+  for(let i=0;i<4;i++){
+    const [x,y]=src[i], [u,v]=dst[i];
+    A.push([x,y,1,0,0,0,-u*x,-u*y]); b.push(u);
+    A.push([0,0,0,x,y,1,-v*x,-v*y]); b.push(v);
+  }
+  const h=gaussSolve(A,b); if(!h) return null;
+  return [h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7],1];
+}
+function applyH(H,x,y){ const w=H[6]*x+H[7]*y+H[8]; return w?[ (H[0]*x+H[1]*y+H[2])/w, (H[3]*x+H[4]*y+H[5])/w ]:[0,0]; }
+function houghLines(mask, W, H, want){
+  const pts=[]; for(let p=0;p<W*H;p++) if(mask[p]) pts.push([p%W,(p/W)|0]);
+  if(pts.length<20) return [];
+  const TH=180, diag=Math.hypot(W,H), R=Math.ceil(diag), RB=2*R+1;
+  const acc=new Float32Array(TH*RB);
+  const cos=new Float32Array(TH), sin=new Float32Array(TH);
+  for(let ti=0;ti<TH;ti++){ const a=ti*Math.PI/TH; cos[ti]=Math.cos(a); sin[ti]=Math.sin(a); }
+  for(const [x,y] of pts) for(let ti=0;ti<TH;ti++){ const r=Math.round(x*cos[ti]+y*sin[ti])+R; acc[ti*RB+r]++; }
+  /* peak picking with non-max suppression */
+  const peaks=[]; const minC=Math.max(8, pts.length*0.02);
+  for(let ti=0;ti<TH;ti++) for(let r=0;r<RB;r++){
+    const c=acc[ti*RB+r]; if(c<minC) continue;
+    let isMax=true;
+    for(let dt=-2;dt<=2&&isMax;dt++) for(let dr=-3;dr<=3;dr++){
+      const tt=(ti+dt+TH)%TH, rr=r+dr; if(rr<0||rr>=RB) continue;
+      if(acc[tt*RB+rr]>c){ isMax=false; break; }
+    }
+    if(isMax) peaks.push({theta:ti*Math.PI/TH, rho:r-R, c, cos:cos[ti], sin:sin[ti]});
+  }
+  peaks.sort((a,b)=>b.c-a.c);
+  return peaks.slice(0, want||14);
+}
+function lineIntersect(a,b){
+  const det=a.cos*b.sin-a.sin*b.cos; if(Math.abs(det)<1e-6) return null;
+  return [ (b.sin*a.rho-a.sin*b.rho)/det, (a.cos*b.rho-b.cos*a.rho)/det ];
+}
+function detectCourt(V){
+  if(!V || V.ridgeCount()<15) return null;
+  const W=V.VW, H=V.VH, acc=V.ridgeAcc, n=V.ridgeCount();
+  let peak=0; for(let i=0;i<acc.length;i++) if(acc[i]>peak) peak=acc[i];
+  if(peak<n*0.15) return null;                       // no persistent lines → no court
+  const mask=new Uint8Array(W*H);
+  const thr=Math.max(n*0.18, peak*0.30);
+  for(let i=0;i<acc.length;i++) mask[i]=acc[i]>=thr?1:0;
+  const lines=houghLines(mask, W, H, 16);
+  if(lines.length<4) return null;
+  /* classify: near-horizontal (baselines/service/net) vs side (verticals) */
+  const horiz=[], side=[];
+  for(const L of lines){ (Math.abs(L.sin)>0.82 ? horiz : side).push(L); }
+  if(horiz.length<2 || side.length<2) return null;
+  const yAt=L=>(L.rho - L.cos*(W/2))/(L.sin||1e-6);   // image-y at horizontal centre
+  const xAt=L=>(L.rho - L.sin*(H/2))/(L.cos||1e-6);   // image-x at vertical centre
+  horiz.sort((a,b)=>yAt(a)-yAt(b));
+  side.sort((a,b)=>xAt(a)-xAt(b));
+  const top=horiz[0], bot=horiz[horiz.length-1], left=side[0], right=side[side.length-1];
+  const TL=lineIntersect(top,left), TR=lineIntersect(top,right),
+        BL=lineIntersect(bot,left), BR=lineIntersect(bot,right);
+  if(!TL||!TR||!BL||!BR) return null;
+  const corners=[TL,TR,BR,BL];
+  for(const c of corners) if(!isFinite(c[0])||!isFinite(c[1])||c[0]<-W||c[0]>2*W||c[1]<-H||c[1]>2*H) return null;
+  /* quad must be reasonably large & convex */
+  const area=Math.abs((TR[0]-TL[0])*(BR[1]-TL[1])-(BR[0]-TL[0])*(TR[1]-TL[1]))/2
+            +Math.abs((BR[0]-TL[0])*(BL[1]-TL[1])-(BL[0]-TL[0])*(BR[1]-TL[1]))/2;
+  if(area < W*H*0.12) return null;
+  /* homography from NORMALISED image coords (0..1, matching ball/player) to metres */
+  const srcN=corners.map(c=>[c[0]/W, c[1]/H]);
+  const dstM=[[0,0],[COURT_W,0],[COURT_W,COURT_L],[0,COURT_L]];
+  const H_img2court=solveHomography(srcN, dstM);
+  const H_court2img=solveHomography(dstM, srcN);
+  if(!H_img2court||!H_court2img) return null;
+  /* confidence: fraction of ridge points that map near a real court line */
+  let onLine=0, tot=0;
+  const near=(v,targets,tol)=>targets.some(t=>Math.abs(v-t)<tol);
+  for(let p=0;p<W*H;p++){ if(!mask[p]) continue; tot++;
+    const [cx,cy]=applyH(H_img2court, (p%W)/W, ((p/W)|0)/H);
+    if(near(cx,[0,COURT_W],0.6) || near(cy,[0,COURT_NET,COURT_L],0.9)) onLine++;
+  }
+  const conf=tot?+(onLine/tot).toFixed(2):0;
+  if(conf<0.45) return null;
+  return {H:H_img2court, Hinv:H_court2img, cornersNorm:corners.map(c=>[c[0]/W,c[1]/H]), conf, lines:lines.length};
+}
+function courtPos(court,x,y){ return court?applyH(court.H,x,y):null; }
+function ballInOut(court,x,y){
+  if(!court) return null;
+  const [cx,cy]=applyH(court.H,x,y);
+  const m=0.4;   // tolerance (line-call slack + tracking noise)
+  const inside = cx>=-m && cx<=COURT_W+m && cy>=-m && cy<=COURT_L+m;
+  return {x:+cx.toFixed(1), y:+cy.toFixed(1), in:inside};
+}
+
 function linkFlights(fs){
   const flights=[]; let cur=null;
   const close=c=>{ if(c&&c.pts.length>=3) flights.push(c); };
@@ -2023,14 +2150,21 @@ function pointInsights(s){
   /* split player observations into near (lower) / far (upper) court */
   const near=[], far=[];
   fs.forEach(f=>f.players.slice(0,2).forEach(p=>{ (p.y>0.5?near:far).push({t:f.t,x:p.x,y:p.y}); }));
-  /* SELF-CALIBRATION: the two players bracket the court. Baseline-to-
-     baseline is 23.77m, so their median vertical separation tells us
-     how many meters one screen-unit is worth in this footage. */
-  const spanY=clamp(median(near.map(p=>p.y))-median(far.map(p=>p.y)), 0.2, 0.9);
-  const mY=23.77/spanY;                      // meters per unit-y
-  const mX=mY*0.55;                          // x foreshortening (camera behind baseline)
+  const court=analysis.court;
+  /* metric conversion: prefer the detected court homography (real perspective
+     geometry); otherwise self-calibrate from the two players bracketing the
+     court — baseline↔baseline is 23.77m. */
+  let toM;
+  if(court){
+    toM=(x,y)=>applyH(court.H,x,y);
+  }else{
+    const spanY=clamp(median(near.map(p=>p.y))-median(far.map(p=>p.y)), 0.2, 0.9);
+    const mY=COURT_L/spanY, mX=mY*0.55;
+    toM=(x,y)=>[x*mX, y*mY];
+  }
   const stepM=(a,b,dt)=>{
-    const d=Math.hypot((a.x-b.x)*mX,(a.y-b.y)*mY);
+    const A=toM(a.x,a.y), B=toM(b.x,b.y);
+    const d=Math.hypot(A[0]-B[0],A[1]-B[1]);
     return (dt>0 && dt<=1.2 && d/dt<=6.5) ? d : 0;   // players don't exceed ~6.5 m/s sustained
   };
   const dist=tr=>{ let m=0; for(let i=1;i<tr.length;i++) m+=stepM(tr[i],tr[i-1],tr[i].t-tr[i-1].t); return m; };
@@ -2041,19 +2175,26 @@ function pointInsights(s){
   let topSpeed=null;
   for(const fl of flights) for(let i=1;i<fl.pts.length;i++){
     const dt=fl.pts[i].t-fl.pts[i-1].t; if(dt<=0||dt>0.6) continue;
-    const v=Math.hypot((fl.pts[i].x-fl.pts[i-1].x)*mX,(fl.pts[i].y-fl.pts[i-1].y)*mY)/dt*3.6;
+    const A=toM(fl.pts[i].x,fl.pts[i].y), B=toM(fl.pts[i-1].x,fl.pts[i-1].y);
+    const v=Math.hypot(A[0]-B[0],A[1]-B[1])/dt*3.6;
     if(v>=25 && v<=230 && (!topSpeed||v>topSpeed)) topSpeed=Math.round(v);
   }
   let turns=0;
   for(const fl of flights){ let lastDx=0; for(let i=1;i<fl.pts.length;i++){ const dx=fl.pts[i].y-fl.pts[i-1].y; if(lastDx&&Math.sign(dx)!==Math.sign(lastDx)&&Math.abs(dx)>.02) turns++; if(Math.abs(dx)>.005) lastDx=dx; } }
   const shots = s.onsets!=null ? s.onsets : (turns?turns+1:null);
   const lastFl=flights[flights.length-1], firstFl=flights[0];
+  /* ball landing / in-out from the final tracked ball position */
+  let landing=null;
+  if(court && lastFl){
+    const lp=lastFl.pts[lastFl.pts.length-1];
+    landing=ballInOut(court, lp.x, lp.y);
+  }
   return {present:+present.toFixed(2), panFrac, flights:flights.length, ballTime, shots,
           moveNear:capM(dist(near)), moveFar:capM(dist(far)),
           endSide: lastFl?(lastFl.pts[lastFl.pts.length-1].y>0.5?"near":"far"):null,
           servedBy: firstFl?(firstFl.pts[0].y>0.5?"near":"far"):null,
           firstBall: firstFl?firstFl.start:null, lastBall: lastFl?lastFl.end:null,
-          topSpeed};
+          topSpeed, court:!!court, landing};
 }
 
 /* ============================================================
@@ -2530,6 +2671,7 @@ async function analyze(file){
              vw:aw, vh:ah, srcAR:(aw&&ah)?aw/ah:16/9,
              videoEl:v, thumbCache:(fast&&fast.thumbs&&fast.thumbs.length)?fast.thumbs:null,
              sensitivity:"balanced", segs:[], name:file.name.replace(/\.[^.]+$/,"")};
+  analysis.court = analysis.vision ? detectCourt(analysis.vision) : null;
   analysis.segs=computeSegments(SENS.balanced.hi, SENS.balanced.lo);
   analysis.segs.forEach(s=>{ s.insights=pointInsights(s); });
   ringProgress(94,3);
@@ -2730,7 +2872,8 @@ function renderCandsAndSummary(){
       <div class="stat"><b>${segs.length}</b><span>points</span></div>
       <div class="stat"><b>${duration?Math.round((1-playT/duration)*100):0}%</b><span>dead time cut</span></div>
       <div class="stat"><b>${segs.length?Math.max(...segs.map(s=>s.score)):0}</b><span>top score</span></div>
-    </div>`;
+    </div>
+    ${analysis.court?`<div style="margin-top:10px; font-size:12px; color:var(--green);">📐 Court mapped — ball landing & in/out calls active (${Math.round(analysis.court.conf*100)}% line fit)</div>`:(analysis.vision?`<div style="margin-top:10px; font-size:12px; color:var(--muted);">📐 Court lines not clear enough to map — positions are relative</div>`:"")}`;
   $("cands").innerHTML=segs.length? segs.map((s,i)=>`
     <div class="cand" id="cand${i}">
       <div class="cv" onclick="previewSeg(${i})">
@@ -2744,6 +2887,7 @@ function renderCandsAndSummary(){
         <div class="ctitle" id="ctitle${i}">Point ${i+1} — ${fmtT(s.start)} → ${fmtT(s.end)}</div>
         <div class="csub" id="csub${i}">AI: activity ${s.score}/99${s.onsets!==null?` · ${s.onsets} ball-strike onsets`:""}</div>
         ${s.insights?`<div class="csub" style="color:var(--accent);">🎾 ${s.insights.shots!=null?`≈${s.insights.shots} shots · `:""}${s.insights.flights?`ball tracked ${s.insights.ballTime}s · `:""}${s.insights.topSpeed?`~${s.insights.topSpeed} km/h · `:""}${s.insights.servedBy?`${s.insights.servedBy}-side serve · `:""}${s.insights.endSide?`ended ${s.insights.endSide} side`:""}${s.insights.moveNear!=null?` · moved ${s.insights.moveNear}m + ${s.insights.moveFar}m`:""}${s.insights.panHeavy?` · camera moving — limited tracking`:""}</div>`:""}
+        ${s.insights&&s.insights.landing?`<div class="csub" style="color:${s.insights.landing.in?'var(--green)':'var(--danger)'};">📍 ball ended at court (${s.insights.landing.x}m, ${s.insights.landing.y}m) — ${s.insights.landing.in?'IN':'OUT/long'} <span style="color:var(--muted);">(est.)</span></div>`:""}
         <div class="trimrow">
           <span>Start</span>
           <button class="trimbtn" onclick="nudgeSeg(${i},'start',-0.5)" title="Earlier">−</button>
