@@ -345,6 +345,19 @@
   .list-empty{text-align:center; color:var(--muted); font-size:13px; padding:40px 30px; line-height:1.6;}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 
+  /* ============ MATCH REPORT ============ */
+  .mr{background:linear-gradient(150deg, rgba(204,255,0,.10), rgba(79,156,249,.06)); border:1px solid rgba(204,255,0,.28); border-radius:18px; padding:16px 16px 14px; margin:14px 0;}
+  .mr-h{font-size:14px; font-weight:800; letter-spacing:-.01em;} .mr-h span{color:var(--muted); font-weight:500; font-size:12px;}
+  .mr-score{display:flex; align-items:center; justify-content:center; gap:20px; margin:12px 0 8px;}
+  .mr-side{text-align:center;} .mr-side b{font-size:34px; letter-spacing:-.03em; display:block; line-height:1;} .mr-side span{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em;}
+  .mr-dash{font-size:26px; color:var(--muted);}
+  .mr-bar{height:6px; border-radius:99px; background:var(--blue); overflow:hidden; margin:4px 0 12px;}
+  .mr-bar>div{height:100%; background:var(--accent);}
+  .mr-rows{display:flex; flex-direction:column; gap:1px;}
+  .mr-row{display:flex; align-items:center; justify-content:space-between; padding:7px 2px; border-bottom:1px solid rgba(255,255,255,.05); font-size:13px;}
+  .mr-row span{color:var(--muted);} .mr-row b{font-weight:700; font-variant-numeric:tabular-nums;} .mr-row b i{color:var(--line); font-style:normal; margin:0 3px;}
+  .mr-note{font-size:10.5px; color:var(--muted); margin-top:10px; line-height:1.4;}
+
   /* ============ MESSAGES / CHAT ============ */
   .chat-wrap{display:flex; flex-direction:column; height:100%; min-height:0;}
   .chat-scroll{flex:1; overflow-y:auto; padding:14px 14px 8px; display:flex; flex-direction:column; gap:8px; scrollbar-width:none;}
@@ -529,6 +542,7 @@
         <div class="upload-step" id="u-review">
           <h2 class="page-title">Your highlights ✂️</h2>
           <div class="hl-summary" id="hl-summary"></div>
+          <div id="match-report"></div>
           <video id="srcplayer" controls playsinline></video>
           <canvas id="timeline" height="64"></canvas>
           <div class="legend">
@@ -2196,6 +2210,83 @@ function classifyOutcome(court, flights, landing, shots, panFrac){
   return {winner, how, detail, dir, isServe, lastHitter:struckBy, conf};
 }
 
+/* ============================================================
+   MATCH REPORT — aggregate per-point outcomes into a scoreline
+   and stat lines: winners vs errors, aces, rally length, ball
+   speed, distance covered. All values inherit the outcome
+   engine's confidence and are labelled estimates in the UI.
+   ============================================================ */
+function buildMatchReport(segs){
+  const ins=segs.map(s=>s.insights).filter(Boolean);
+  const O=ins.map(i=>i.outcome).filter(Boolean);
+  if(!ins.length) return null;
+  const won={near:0,far:0}, winners={near:0,far:0}, errors={near:0,far:0},
+        aces={near:0,far:0}, netErr={near:0,far:0}, outErr={near:0,far:0};
+  const dirW={cross:0,line:0};
+  for(const o of O){
+    won[o.winner]++;
+    const loser=o.winner==='near'?'far':'near';
+    if(o.how==='winner'){ winners[o.winner]++; (o.dir==='crosscourt'?dirW.cross++:dirW.line++); }
+    else if(/ace/.test(o.how)){ winners[o.winner]++; aces[o.winner]++; }
+    else if(/net/.test(o.how)){ errors[loser]++; netErr[loser]++; }
+    else { errors[loser]++; outErr[loser]++; }
+  }
+  const shots=ins.map(i=>i.shots).filter(v=>v!=null);
+  const speeds=ins.map(i=>i.topSpeed).filter(Boolean);
+  const sum=a=>a.reduce((x,y)=>x+y,0);
+  return {
+    points:O.length, decided:O.length, total:segs.length,
+    won, winners, errors, aces, netErr, outErr, dirW,
+    avgShots: shots.length? +(sum(shots)/shots.length).toFixed(1):null,
+    maxShots: shots.length? Math.max(...shots):null,
+    topSpeed: speeds.length? Math.max(...speeds):null,
+    avgSpeed: speeds.length? Math.round(sum(speeds)/speeds.length):null,
+    moveNear: Math.round(sum(ins.map(i=>i.moveNear||0))),
+    moveFar: Math.round(sum(ins.map(i=>i.moveFar||0))),
+    hasCourt: !!(analysis&&analysis.court)
+  };
+}
+function renderMatchReport(segs){
+  const el=$("match-report"); if(!el) return;
+  const r=buildMatchReport(segs);
+  if(!r){ el.innerHTML=""; return; }
+  const bar=(a,b)=>{ const t=a+b||1; return `<div class="mr-bar"><div style="width:${a/t*100}%"></div></div>`; };
+  const you=v=>v.near, opp=v=>v.far;
+  if(!r.hasCourt || r.decided===0){
+    /* no court map → outcome unknown; show the rally/physical stats we do have */
+    el.innerHTML=`<div class="mr">
+      <div class="mr-h">📊 Match stats <span>· ${r.total} points</span></div>
+      <div class="mr-rows">
+        ${r.avgShots!=null?`<div class="mr-row"><span>Avg rally</span><b>${r.avgShots} shots</b></div>`:""}
+        ${r.maxShots!=null?`<div class="mr-row"><span>Longest rally</span><b>${r.maxShots} shots</b></div>`:""}
+        ${r.topSpeed?`<div class="mr-row"><span>Top ball speed</span><b>~${r.topSpeed} km/h</b></div>`:""}
+      </div>
+      <div class="mr-note">Point outcomes need a clear court view to map — positions here are relative.</div>
+    </div>`;
+    return;
+  }
+  el.innerHTML=`<div class="mr">
+    <div class="mr-h">🏆 Match report <span>· ${r.decided} of ${r.total} points read</span></div>
+    <div class="mr-score">
+      <div class="mr-side"><b>${you(r.won)}</b><span>Near court</span></div>
+      <div class="mr-dash">–</div>
+      <div class="mr-side"><b>${opp(r.won)}</b><span>Far court</span></div>
+    </div>
+    ${bar(you(r.won),opp(r.won))}
+    <div class="mr-rows">
+      <div class="mr-row"><span>Winners</span><b>${you(r.winners)} <i>·</i> ${opp(r.winners)}</b></div>
+      ${(r.aces.near+r.aces.far)?`<div class="mr-row"><span>Aces / service winners</span><b>${you(r.aces)} <i>·</i> ${opp(r.aces)}</b></div>`:""}
+      <div class="mr-row"><span>Unforced-ish errors</span><b>${you(r.errors)} <i>·</i> ${opp(r.errors)}</b></div>
+      <div class="mr-row"><span>· into the net</span><b>${you(r.netErr)} <i>·</i> ${opp(r.netErr)}</b></div>
+      <div class="mr-row"><span>· long / wide</span><b>${you(r.outErr)} <i>·</i> ${opp(r.outErr)}</b></div>
+      ${(r.dirW.cross+r.dirW.line)?`<div class="mr-row"><span>Winner direction</span><b>${r.dirW.cross} cross · ${r.dirW.line} line</b></div>`:""}
+      ${r.avgShots!=null?`<div class="mr-row"><span>Avg / longest rally</span><b>${r.avgShots} · ${r.maxShots} shots</b></div>`:""}
+      ${r.topSpeed?`<div class="mr-row"><span>Top / avg ball speed</span><b>~${r.topSpeed} · ${r.avgSpeed} km/h</b></div>`:""}
+      <div class="mr-row"><span>Distance covered</span><b>${r.moveNear}m <i>·</i> ${r.moveFar}m</b></div>
+    </div>
+    <div class="mr-note">🎾 Automated read from ball + court tracking — estimates, not umpire calls.</div>
+  </div>`;
+}
 function linkFlights(fs){
   const flights=[]; let cur=null;
   const close=c=>{ if(c&&c.pts.length>=3) flights.push(c); };
@@ -2965,6 +3056,7 @@ function renderCandsAndSummary(){
       <div class="stat"><b>${segs.length?Math.max(...segs.map(s=>s.score)):0}</b><span>top score</span></div>
     </div>
     ${analysis.court?`<div style="margin-top:10px; font-size:12px; color:var(--green);">📐 Court mapped — ball landing & in/out calls active (${Math.round(analysis.court.conf*100)}% line fit)</div>`:(analysis.vision?`<div style="margin-top:10px; font-size:12px; color:var(--muted);">📐 Court lines not clear enough to map — positions are relative</div>`:"")}`;
+  renderMatchReport(segs);
   $("cands").innerHTML=segs.length? segs.map((s,i)=>`
     <div class="cand" id="cand${i}">
       <div class="cv" onclick="previewSeg(${i})">
@@ -3054,7 +3146,9 @@ async function publishClips(){
   const cap=($("cap").value.trim()||"Fresh highlights 🎾").replace(/</g,"&lt;");
   const now=new Date();
   const blobKey="b"+Math.random().toString(36).slice(2,10);
-  store.sessions.unshift({name,date:now,duration,points:segs.length,kept:kept.length});
+  const report=buildMatchReport(analysis.segs);
+  store.sessions.unshift({name,date:now,duration,points:segs.length,kept:kept.length,
+    report: report&&report.hasCourt&&report.decided? {won:report.won,winners:report.winners,errors:report.errors,aces:report.aces} : null});
   const clips=[];
   for(const s of [...kept].reverse()){
     const c={
@@ -3275,11 +3369,21 @@ function renderGame(){
   const footage=S.reduce((a,s)=>a+s.duration,0);
   const points=S.reduce((a,s)=>a+s.points,0);
   const avgLen=C.length? (C.reduce((a,c)=>a+(c.end-c.start),0)/C.length).toFixed(1)+"s" : "—";
+  /* cumulative outcome record across sessions that were court-mapped */
+  const R=S.map(s=>s.report).filter(Boolean);
+  let recKpi="";
+  if(R.length){
+    const near=R.reduce((a,r)=>a+r.won.near,0), far=R.reduce((a,r)=>a+r.won.far,0);
+    const win=R.reduce((a,r)=>a+r.winners.near,0), err=R.reduce((a,r)=>a+r.errors.near,0);
+    recKpi=`<div class="kpi"><b>${near}–${far}</b><span>points won (est.)</span></div>
+            <div class="kpi"><b>${win}/${err}</b><span>your winners/errors</span></div>`;
+  }
   $("kpis").innerHTML=`
     <div class="kpi"><b>${S.length}</b><span>sessions</span></div>
     <div class="kpi"><b>${fmtT(footage)}</b><span>footage analyzed</span></div>
     <div class="kpi"><b>${points}</b><span>points found</span></div>
-    <div class="kpi"><b>${avgLen}</b><span>avg clip</span></div>`;
+    <div class="kpi"><b>${avgLen}</b><span>avg clip</span></div>
+    ${recKpi}`;
   /* clip length trend — real data from your kept clips */
   if(C.length){
     const last=[...C].slice(0,8).reverse();
