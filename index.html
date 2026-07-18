@@ -1938,7 +1938,7 @@ function ringProgress(p, stage){
    for future "who won the point and how" inference.
    ============================================================ */
 function makeVision(){
-  const VW=192, VH=108;
+  const VW=256, VH=144;
   const vcv=document.createElement("canvas"); vcv.width=VW; vcv.height=VH;
   const vcx=vcv.getContext("2d",{willReadFrequently:true});
   let vprev=null;
@@ -1993,18 +1993,20 @@ function makeVision(){
       }
       comps.push({n, cx:sx/n, cy:sy/n, w:mxx-mnx+1, h:mxy-mny+1});
     }
-    /* shape classification:
-       player = wide blob (a body: both dimensions substantial)
-       ball   = small or thin smear (fast small object between frames) */
-    const players=comps.filter(c=>c.n>=22 && Math.min(c.w,c.h)>=5).sort((a,b)=>b.n-a.n).slice(0,3)
-      .map(c=>({x:c.cx/VW, y:c.cy/VH, a:c.n}));
+    /* shape classification (256×144):
+       player = a body — has real HEIGHT (tall), substantial area
+       ball   = small & compact, or a thin fast smear, but NEVER tall
+                (a tall thin blob is a player edge, not a ball) */
+    const players=comps.filter(c=>c.n>=30 && c.h>=8).sort((a,b)=>b.n-a.n).slice(0,3)
+      .map(c=>({x:c.cx/VW, y:c.cy/VH, a:c.n, h:c.h}));
     const ballC=comps.filter(c=>{
-        const minor=Math.min(c.w,c.h);
-        const small=c.n>=2&&c.n<=16;                 // tiny slow-moving ball
-        const smear=minor<=4&&c.n>=3&&c.n<=160;      // fast ball motion streak
-        return small||smear;
+        const mx=Math.max(c.w,c.h), mn=Math.max(1,Math.min(c.w,c.h)), aspect=mx/mn;
+        if(c.h>=8) return false;                       // too tall → it's a body
+        const compact=c.n>=2 && c.n<=22 && mx<=8 && aspect<=3;   // small round ball
+        const smear=mn<=3 && c.n>=3 && c.n<=140 && aspect<=8;    // fast horizontal streak
+        return compact||smear;
       })
-      .filter(c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.06))
+      .filter(c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.05))
       .sort((a,b)=>b.n-a.n)[0]||null;
     frames.push({t, pan, players, ball: (ballC&&!pan)?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
   }
@@ -2173,13 +2175,24 @@ function linkFlights(fs){
     if(f.cut||f.pan){ close(cur); cur=null; continue; }
     if(f.ball){
       const gap=cur?f.t-cur.end:0;
-      /* speed-gated linking: allowed jump grows with the time gap */
-      if(cur && gap<=0.7 && Math.hypot(f.ball.x-cur.lastX, f.ball.y-cur.lastY) < (0.75*gap+0.06)){
-        cur.end=f.t; cur.pts.push({t:f.t, x:f.ball.x, y:f.ball.y}); cur.lastX=f.ball.x; cur.lastY=f.ball.y;
-      }else{
-        close(cur);
-        cur={start:f.t, end:f.t, pts:[{t:f.t, x:f.ball.x, y:f.ball.y}], lastX:f.ball.x, lastY:f.ball.y};
+      let ok=false;
+      if(cur && gap>0 && gap<=0.7){
+        const n=cur.pts.length;
+        let ex=cur.lastX, ey=cur.lastY;
+        if(n>=2){
+          /* predict next position from the ball's velocity — a struck ball
+             travels fast in a near-straight line, so link to where it SHOULD
+             be, not just near where it was. This bridges fast mid-court motion
+             that a raw distance gate would fragment. */
+          const p0=cur.pts[n-2], p1=cur.pts[n-1], dt=p1.t-p0.t;
+          if(dt>0){ ex=cur.lastX+(p1.x-p0.x)/dt*gap; ey=cur.lastY+(p1.y-p0.y)/dt*gap; }
+        }
+        const predErr=Math.hypot(f.ball.x-ex, f.ball.y-ey);
+        const rawJump=Math.hypot(f.ball.x-cur.lastX, f.ball.y-cur.lastY);
+        ok = predErr < (0.5*gap+0.10) || rawJump < (0.9*gap+0.06);
       }
+      if(ok){ cur.end=f.t; cur.pts.push({t:f.t, x:f.ball.x, y:f.ball.y}); cur.lastX=f.ball.x; cur.lastY=f.ball.y; }
+      else { close(cur); cur={start:f.t, end:f.t, pts:[{t:f.t, x:f.ball.x, y:f.ball.y}], lastX:f.ball.x, lastY:f.ball.y}; }
     }else if(cur && f.t-cur.end>0.7){ close(cur); cur=null; }
   }
   close(cur);
@@ -2795,12 +2808,13 @@ function computeSegments(hiMul, loMul){
   if(analysis.vision){
     for(const s of segs){
       const vi=pointInsights(s);
-      if(vi && vi.flights>=1 && vi.firstBall!=null){
-        /* only trim when there's real dead time beyond the ball action —
-           never shave a serve that the tracker picked up a beat late */
-        const ns=(vi.firstBall-s.start>3) ? vi.firstBall-1.2 : s.start;
-        const ne=(s.end-vi.lastBall>3) ? vi.lastBall+1.6 : s.end;
-        if(ne-ns>=2.5){ s.start=ns; s.end=ne; }
+      /* only trust ball boundaries when the ball was tracked across a good
+         span of the segment; otherwise motion boundaries are more reliable.
+         Trim conservatively — shave obvious dead ends, never gut the clip. */
+      if(vi && vi.flights>=2 && vi.firstBall!=null && vi.lastBall!=null && (vi.lastBall-vi.firstBall) > (s.end-s.start)*0.4){
+        const ns=(vi.firstBall-s.start>4) ? vi.firstBall-1.5 : s.start;
+        const ne=(s.end-vi.lastBall>4) ? vi.lastBall+2.0 : s.end;
+        if(ne-ns >= Math.max(2.5,(s.end-s.start)*0.6)){ s.start=ns; s.end=ne; }
       }
     }
   }
