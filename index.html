@@ -607,10 +607,8 @@
           <div id="sessions"><p class="sub" style="padding:6px 0;">Nothing yet — upload a match and this builds automatically.</p></div>
         </div>
         <div class="panel-card coach-card">
-          <div class="pc-head"><span>✦ AI Coach</span><small>sample insights — shot-level AI is v2</small></div>
-          <div class="tip"><div class="tip-ic">🎯</div><div><b>Attack the second serve</b><p>Players win far more points stepping inside the baseline on second-serve returns. Film your return games and count it.</p></div></div>
-          <div class="tip"><div class="tip-ic">↩️</div><div><b>Reset cross-court under pressure</b><p>In rallies past 8 shots, down-the-line errors spike. Cross-court buys margin — wait for the short ball.</p></div></div>
-          <div class="tip"><div class="tip-ic">🏃</div><div><b>Recover after the wide serve</b><p>Most passes after wide serves go behind the server. Split-step half a beat earlier on the way back.</p></div></div>
+          <div class="pc-head"><span>✦ AI Coach</span><small id="coach-note">tips to try</small></div>
+          <div id="coach-body"></div>
         </div>
         <div style="height:10px"></div>
       </div>
@@ -653,11 +651,11 @@
           <div class="set-row" onclick="toast('Exports use your source resolution')"><span class="set-ic">🎞️</span><b>Export quality</b><span class="set-badge">Source</span></div>
         </div>
         <div class="panel-card set-group">
-          <div class="pc-head"><span>Privacy</span></div>
-          <div class="set-row"><span class="set-ic">🔒</span><b>All processing on-device</b><span class="set-badge on">Always</span></div>
-          <div class="set-row"><span class="set-ic">☁️</span><b>Cloud backup</b><span class="set-badge">Soon</span></div>
+          <div class="pc-head"><span>Privacy &amp; sync</span></div>
+          <div class="set-row"><span class="set-ic">🔒</span><b>AI analysis on your device</b><span class="set-badge on">Always</span></div>
+          <div class="set-row"><span class="set-ic">☁️</span><b>Posted clips sync to your account</b><span class="set-badge on" id="sync-badge">On</span></div>
         </div>
-        <div class="note"><b>Beta:</b> clips live in this browser session — no account system yet. Downloads are real video files; keep those.</div>
+        <div class="note">Your match footage is analyzed privately on your device — it's never uploaded to process. Only clips you choose to post go to your account, where they sync across devices and appear in the feed. Downloads are real video files you own.</div>
         <div style="height:10px"></div>
       </div>
     </div>
@@ -3148,7 +3146,7 @@ async function publishClips(){
   const blobKey="b"+Math.random().toString(36).slice(2,10);
   const report=buildMatchReport(analysis.segs);
   store.sessions.unshift({name,date:now,duration,points:segs.length,kept:kept.length,
-    report: report&&report.hasCourt&&report.decided? {won:report.won,winners:report.winners,errors:report.errors,aces:report.aces} : null});
+    report: report&&report.hasCourt&&report.decided? {won:report.won,winners:report.winners,errors:report.errors,aces:report.aces,netErr:report.netErr,outErr:report.outErr,dirW:report.dirW} : null});
   const clips=[];
   for(const s of [...kept].reverse()){
     const c={
@@ -3393,12 +3391,46 @@ function renderGame(){
       <div class="spark-labels"><span>older</span><span>latest · ${lens[lens.length-1].toFixed(1)}s</span></div>`;
     $("trend-note").textContent=`last ${lens.length} clip${lens.length!==1?"s":""}`;
   }
+  renderCoach();
   $("sess-note").textContent=S.length? `${S.length} total`:"";
   if(S.length) $("sessions").innerHTML=S.map(s=>`
     <div class="mh">
       <div class="mh-res">🎾</div>
       <div class="mh-body"><b>${s.name}</b><span>${s.date.toLocaleDateString(undefined,{month:"short",day:"numeric"})} · ${fmtT(s.duration)} footage · ${s.points} points found · ${s.kept} kept</span></div>
     </div>`).join("");
+}
+function renderCoach(){
+  const body=$("coach-body"), note=$("coach-note"); if(!body) return;
+  const R=store.sessions.map(s=>s.report).filter(Boolean);
+  const TIPS=[
+    ['🎯','Attack the second serve','Stepping inside the baseline on second-serve returns wins more points. Film your return games and watch it back.'],
+    ['↩️','Reset cross-court under pressure','In long rallies, down-the-line errors spike. Cross-court buys margin — wait for the short ball to change direction.'],
+    ['🏃','Recover after the wide serve','Most passes after a wide serve go behind the server. Split-step half a beat earlier on the way back.']
+  ];
+  const render=list=>list.map(t=>`<div class="tip"><div class="tip-ic">${t[0]}</div><div><b>${t[1]}</b><p>${t[2]}</p></div></div>`).join("");
+  if(!R.length){
+    note.textContent="tips to try — process matches for your own";
+    body.innerHTML=render(TIPS); return;
+  }
+  const nsum=v=>R.reduce((a,r)=>a+((r[v]&&r[v].near)||0),0);
+  const fsum=v=>R.reduce((a,r)=>a+((r[v]&&r[v].far)||0),0);
+  const wonN=nsum("won"), wonF=fsum("won"), tot=wonN+wonF;
+  const yW=nsum("winners"), yNet=nsum("netErr"), yOut=nsum("outErr"), yErr=yNet+yOut, yAce=nsum("aces");
+  const cross=R.reduce((a,r)=>a+((r.dirW&&r.dirW.cross)||0),0), line=R.reduce((a,r)=>a+((r.dirW&&r.dirW.line)||0),0);
+  const ins=[];
+  if(tot) ins.push(['🏆','Your win rate',`You won ${Math.round(wonN/tot*100)}% of read points — ${wonN} of ${tot}. Winners ${yW}, errors ${yErr}${yAce?`, aces ${yAce}`:""}.`]);
+  if(yErr>=3){
+    if(yNet>yOut) ins.push(['🎾','Get more margin over the net',`${yNet} of your ${yErr} errors went into the net. Aim a metre higher over the net — most of these turn into deep balls instead.`]);
+    else ins.push(['🎯','Rein in the big cuts',`${yOut} of your ${yErr} errors sailed long or wide. A touch more spin keeps them inside the lines without losing pace.`]);
+  }
+  if(yW>=2 && cross+line>=2){
+    ins.push(['📈','Your winning pattern', cross>=line
+      ? `Your winners skew crosscourt (${cross} vs ${line} down the line) — keep working the angle, then surprise with the line.`
+      : `You favour the line for winners (${line} vs ${cross} crosscourt) — high reward; keep an eye on the error column.`]);
+  }
+  note.textContent=`from ${R.length} processed match${R.length!==1?"es":""} · estimates`;
+  const out = ins.length ? (ins.length===1 ? ins.concat([TIPS[0]]) : ins) : TIPS;
+  body.innerHTML=render(out);
 }
 function renderProfile(){
   const C=store.clips, S=store.sessions;
