@@ -1976,39 +1976,58 @@ function makeVision(){
        and ball readings during a pan are unreliable, flag and move on */
     const pan = hotN>VW*VH*.12;
     if(!pan) accumulateRidges(luma, hot);
-    /* connected components over the motion mask */
-    lbl.fill(0); let nextL=0; const comps=[];
-    for(let p=0;p<VW*VH;p++){
-      if(!hot[p]||lbl[p]) continue;
-      nextL++; let sp=0; stack[sp++]=p; lbl[p]=nextL;
-      let n=0,sx=0,sy=0,mnx=VW,mxx=0,mny=VH,mxy=0;
-      while(sp){
-        const q=stack[--sp], qx=q%VW, qy=(q-qx)/VW;
-        n++; sx+=qx; sy+=qy;
-        if(qx<mnx)mnx=qx; if(qx>mxx)mxx=qx; if(qy<mny)mny=qy; if(qy>mxy)mxy=qy;
-        if(qx>0&&hot[q-1]&&!lbl[q-1]){lbl[q-1]=nextL;stack[sp++]=q-1;}
-        if(qx<VW-1&&hot[q+1]&&!lbl[q+1]){lbl[q+1]=nextL;stack[sp++]=q+1;}
-        if(qy>0&&hot[q-VW]&&!lbl[q-VW]){lbl[q-VW]=nextL;stack[sp++]=q-VW;}
-        if(qy<VH-1&&hot[q+VW]&&!lbl[q+VW]){lbl[q+VW]=nextL;stack[sp++]=q+VW;}
+    /* connected components on a boolean mask → blob stats */
+    function cc(mask){
+      lbl.fill(0); let nextL=0; const comps=[];
+      for(let p=0;p<VW*VH;p++){
+        if(!mask[p]||lbl[p]) continue;
+        nextL++; let sp=0; stack[sp++]=p; lbl[p]=nextL;
+        let n=0,sx=0,sy=0,mnx=VW,mxx=0,mny=VH,mxy=0;
+        while(sp){
+          const q=stack[--sp], qx=q%VW, qy=(q-qx)/VW;
+          n++; sx+=qx; sy+=qy;
+          if(qx<mnx)mnx=qx; if(qx>mxx)mxx=qx; if(qy<mny)mny=qy; if(qy>mxy)mxy=qy;
+          if(qx>0&&mask[q-1]&&!lbl[q-1]){lbl[q-1]=nextL;stack[sp++]=q-1;}
+          if(qx<VW-1&&mask[q+1]&&!lbl[q+1]){lbl[q+1]=nextL;stack[sp++]=q+1;}
+          if(qy>0&&mask[q-VW]&&!lbl[q-VW]){lbl[q-VW]=nextL;stack[sp++]=q-VW;}
+          if(qy<VH-1&&mask[q+VW]&&!lbl[q+VW]){lbl[q+VW]=nextL;stack[sp++]=q+VW;}
+        }
+        comps.push({n, cx:sx/n, cy:sy/n, w:mxx-mnx+1, h:mxy-mny+1});
       }
-      comps.push({n, cx:sx/n, cy:sy/n, w:mxx-mnx+1, h:mxy-mny+1});
+      return comps;
     }
+    const comps=cc(hot);
     /* shape classification (256×144):
-       player = a body — has real HEIGHT (tall), substantial area
-       ball   = small & compact, or a thin fast smear, but NEVER tall
-                (a tall thin blob is a player edge, not a ball) */
+       player = a body — has real HEIGHT (tall), substantial area */
     const players=comps.filter(c=>c.n>=30 && c.h>=8).sort((a,b)=>b.n-a.n).slice(0,3)
       .map(c=>({x:c.cx/VW, y:c.cy/VH, a:c.n, h:c.h}));
-    const ballC=comps.filter(c=>{
+    const awayFromPlayers=c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.05);
+    /* motion-based ball: small compact blob or thin fast smear, never tall */
+    const motionBall=comps.filter(c=>{
         const mx=Math.max(c.w,c.h), mn=Math.max(1,Math.min(c.w,c.h)), aspect=mx/mn;
-        if(c.h>=8) return false;                       // too tall → it's a body
-        const compact=c.n>=2 && c.n<=22 && mx<=8 && aspect<=3;   // small round ball
-        const smear=mn<=3 && c.n>=3 && c.n<=140 && aspect<=8;    // fast horizontal streak
+        if(c.h>=8) return false;
+        const compact=c.n>=2 && c.n<=22 && mx<=8 && aspect<=3;
+        const smear=mn<=3 && c.n>=3 && c.n<=140 && aspect<=8;
         return compact||smear;
-      })
-      .filter(c=>players.every(pl=>Math.hypot(c.cx/VW-pl.x,(c.cy/VH-pl.y)*.6)>0.05))
-      .sort((a,b)=>b.n-a.n)[0]||null;
-    frames.push({t, pan, players, ball: (ballC&&!pan)?{x:ballC.cx/VW, y:ballC.cy/VH}:null});
+      }).filter(awayFromPlayers).sort((a,b)=>b.n-a.n)[0]||null;
+    /* COLOR-GATED ball: a tennis ball is distinctively yellow-green. This
+       finds it even when it is NOT moving (at rest after a bounce) — the key
+       to pinning the true landing point, which pure motion tracking misses.
+       Yellow = R & G high, B clearly lower; excludes white lines (R≈G≈B). */
+    let colorBall=null;
+    const yel=new Uint8Array(VW*VH); let yelN=0;
+    for(let p=0;p<VW*VH;p++){ const r=d[p*4],g=d[p*4+1],bl=d[p*4+2];
+      if(r>135 && g>135 && bl<g-35 && bl<r-35){ yel[p]=1; yelN++; } }
+    if(yelN>=2 && yelN<VW*VH*0.03){          // some yellow, but not a yellow-dominated frame
+      colorBall=cc(yel).filter(c=>{
+        const mx=Math.max(c.w,c.h), mn=Math.max(1,Math.min(c.w,c.h));
+        return c.n>=2 && c.n<=40 && mx<=10 && mx/mn<=3;   // compact yellow blob
+      }).filter(awayFromPlayers).sort((a,b)=>b.n-a.n)[0]||null;
+    }
+    /* prefer the color ball (works at rest); fall back to motion ball */
+    const chosen = colorBall || motionBall;
+    frames.push({t, pan, players,
+      ball: (chosen&&!pan)?{x:chosen.cx/VW, y:chosen.cy/VH, color:!!colorBall}:null});
   }
   return {feed, frames, resetPrev:()=>{vprev=null;}, VW, VH, ridgeAcc, ridgeCount:()=>ridgeN};
 }
@@ -2133,39 +2152,48 @@ function classifyOutcome(court, flights, landing, shots, panFrac){
   if(!court || !flights.length || !landing) return null;
   const lastFl=flights[flights.length-1];
   if(lastFl.pts.length<2) return null;
-  const P=lastFl.pts, b=P[P.length-1];
-  /* read the final direction over a multi-frame baseline (the very last
-     inter-frame delta is the noisiest — the ball is slowest at its apex/death) */
-  const a=P[Math.max(0,P.length-4)];
-  let dyImg=b.y-a.y;                            // image-y grows toward near court
-  if(Math.abs(dyImg)<0.02){ dyImg=b.y-P[0].y; } // fall back to whole-flight direction
-  if(Math.abs(dyImg)<0.02) return null;         // genuinely no clear direction
-  const lastHitter = dyImg>0 ? 'far' : 'near'; // ball heading to near ⇒ far struck it
-  const other = lastHitter==='far' ? 'near' : 'far';
-  const aCourt=applyH(court.H,a.x,a.y);
-  const startLeft=aCourt[0]<COURT_W/2, endLeft=landing.x<COURT_W/2;
-  const dir=(startLeft!==endLeft)?'crosscourt':'down the line';
-  const isServe = flights.length<=1 || (shots!=null && shots<=1);
+  const P=lastFl.pts, b=P[P.length-1], a=P[Math.max(0,P.length-4)];
   const cx=landing.x, cy=landing.y;
-  const netBand=Math.abs(cy-COURT_NET)<2.2;    // ball died around the net line
+  const netBand=Math.abs(cy-COURT_NET)<1.8;    // ball died on the net line
+  /* WHO STRUCK LAST: for a ball that dies in-bounds or beyond a baseline, the
+     half it lands in reveals the striker — the ball had to travel there from
+     the opposite player. This is robust (needs only the landing point). Only a
+     ball dying AT the net is ambiguous by position, so there we read the
+     approach direction instead. */
+  let struckBy = (cy > COURT_NET) ? 'far' : 'near';
+  if(netBand){
+    /* the ball rests at the net after its final approach. Scan back from the
+       resting tail to the last real vertical motion — the approach to the net —
+       and read a short window there to see which side the ball came from. */
+    let dyImg=0;
+    for(let i=P.length-1;i>0;i--){
+      if(Math.abs(P[i].y-P[i-1].y)>0.02){ dyImg=P[i].y-P[Math.max(0,i-3)].y; break; }
+    }
+    if(Math.abs(dyImg)>=0.02) struckBy = dyImg>0 ? 'far' : 'near';
+  }
+  const other = struckBy==='far' ? 'near' : 'far';
+  const aCourt=applyH(court.H,a.x,a.y);
+  const dir=((aCourt[0]<COURT_W/2)!==(cx<COURT_W/2))?'crosscourt':'down the line';
+  /* serve only if it's plausibly the first-and-only exchange AND brief */
+  const span = lastFl.end - flights[0].start;
+  const isServe = flights.length<=1 && (shots==null||shots<=1) && span<2.6;
   let how, winner, detail;
   if(netBand){
-    /* a ball that dies at the net is an error — a serve there is a fault, not an ace */
     how = isServe?'serve into the net':'into the net'; winner=other;
-    detail=`${lastHitter}-court player ${isServe?'faulted':'netted it'}`;
+    detail=`${struckBy}-court player ${isServe?'faulted':'netted it'}`;
   }else if(landing.in){
-    winner=lastHitter;
+    winner=struckBy;
     if(isServe){ how='ace / service winner'; detail='serve went unreturned'; }
-    else { how='winner'; detail=`${lastHitter}-court player, ${dir}`; }
+    else { how='winner'; detail=`${struckBy}-court player, ${dir}`; }
   }else{
     winner=other;
     const long=cy<0||cy>COURT_L, wide=cx<0||cx>COURT_W;
     how = long?'hit long':wide?'hit wide':'out';
-    detail=`${lastHitter}-court player ${how}`;
+    detail=`${struckBy}-court player ${how}`;
   }
   let conf=court.conf*(1-panFrac)*clamp(lastFl.pts.length/6,0.4,1);
   conf=+clamp(conf,0.1,0.95).toFixed(2);
-  return {winner, how, detail, dir, isServe, lastHitter, conf};
+  return {winner, how, detail, dir, isServe, lastHitter:struckBy, conf};
 }
 
 function linkFlights(fs){
